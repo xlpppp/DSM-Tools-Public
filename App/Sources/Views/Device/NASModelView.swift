@@ -114,8 +114,13 @@ struct NASRenderer {
             front = CGSize(width: count > 1 ? 66 : 56, height: 104)
             depth = CGVector(dx: 50 * factor, dy: -24 * factor)
         case .rack:
-            let w: CGFloat = 2 * 16 + 4 * 44 + 3 * 3
-            front = CGSize(width: w, height: 12 + CGFloat(rows) * 13 + CGFloat(rows - 1) * 3)
+            let side: CGFloat = 16
+            let slot: CGFloat = 44
+            let seam: CGFloat = 3
+            let rowHeight: CGFloat = 13
+            let w = side * 2 + slot * 4 + seam * 3
+            let h = side * 0.75 + CGFloat(rows) * rowHeight + CGFloat(rows - 1) * seam
+            front = CGSize(width: w, height: h)
             depth = CGVector(dx: w * 0.16 * factor, dy: -w * 0.08 * factor)
         }
         shadowRoom = style == .hero ? 10 : 2

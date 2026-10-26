@@ -129,7 +129,7 @@ final class SessionManager {
     }
 
     /// Interface names, not merely "still online". Duplicate satisfied callbacks must not reconnect.
-    private static func pathSignature(_ path: NWPath) -> String {
+    nonisolated private static func pathSignature(_ path: NWPath) -> String {
         let names = path.availableInterfaces.map(\.name).sorted().joined(separator: ",")
         return "\(path.status == .satisfied ? 1 : 0)|\(path.isExpensive ? 1 : 0)|\(names)"
     }
