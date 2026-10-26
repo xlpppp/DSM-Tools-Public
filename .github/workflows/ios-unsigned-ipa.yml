@@ -1,0 +1,98 @@
+name: DSM-Tools iOS unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "ipa-build-*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  dsmkit:
+    name: DSMKit tests (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0-noble
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: swift test
+        working-directory: Packages/DSMKit
+        run: swift test
+
+  ipa:
+    name: Unsigned iOS IPA
+    needs: dsmkit
+    # macos-15-intel is not in the current actions/runner-images tree.
+    # macos-15 documents Xcode 16.4 as the default at /Applications/Xcode_16.4.app.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -d "/Applications/Xcode_16.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          fi
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Build unsigned IPA
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          bash scripts/build.sh > build/ci-build.log 2>&1
+
+      - name: Verify IPA
+        run: |
+          set -euo pipefail
+          ipa=build/NASHelper-unsigned.ipa
+          test -s "$ipa"
+          unzip -t "$ipa"
+          unzip -l "$ipa" | grep -q "Payload/NASHelper.app/Info.plist"
+          mkdir -p build/artifact
+          cp "$ipa" build/artifact/NASHelper-unsigned.ipa
+          (cd build/artifact && shasum -a 256 NASHelper-unsigned.ipa > SHA256SUMS.txt)
+          {
+            echo "commit=${GITHUB_SHA}"
+            echo "ref=${GITHUB_REF}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            xcodebuild -version | awk 'NR==1{print "xcode_version="$0} NR==2{print "xcode_build="$0}'
+            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > build/artifact/BUILD_INFO.txt
+          hash=$(awk '{print $1}' build/artifact/SHA256SUMS.txt)
+          {
+            echo "### Unsigned IPA"
+            echo "- commit: \`${GITHUB_SHA}\`"
+            echo "- xcode: $(xcodebuild -version | tr '\n' ' ')"
+            echo "- artifact: NASHelper-unsigned"
+            echo "- sha256: \`${hash}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: NASHelper-unsigned
+          path: |
+            build/artifact/NASHelper-unsigned.ipa
+            build/artifact/SHA256SUMS.txt
+            build/artifact/BUILD_INFO.txt
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ipa-build-log
+          path: build/ci-build.log
+          retention-days: 7
+          if-no-files-found: error
