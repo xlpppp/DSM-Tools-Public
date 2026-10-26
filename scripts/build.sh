@@ -32,7 +32,8 @@ if [[ "$mode" == "simulator" ]]; then
   fi
   echo "编译模拟器版本…"
   xcodebuild -project NASHelper.xcodeproj -scheme NASHelper -configuration Debug \
-    -destination "id=$udid" -derivedDataPath build/DerivedData -quiet build
+    -destination "id=$udid" -derivedDataPath build/DerivedData \
+    -skipPackagePluginValidation -skipMacroValidation -quiet build
   xcrun simctl boot "$udid" 2>/dev/null || true
   open -a Simulator
   xcrun simctl install "$udid" build/DerivedData/Build/Products/Debug-iphonesimulator/NASHelper.app
@@ -43,7 +44,8 @@ fi
 
 echo "编译真机版本（未签名）…"
 xcodebuild -project NASHelper.xcodeproj -scheme NASHelper -configuration Release \
-  -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData -quiet \
+  -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/DerivedData \
+  -skipPackagePluginValidation -skipMacroValidation -quiet \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
 
 rm -rf build/Payload build/NASHelper-unsigned.ipa
