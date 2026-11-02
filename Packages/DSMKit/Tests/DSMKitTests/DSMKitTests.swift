@@ -1520,8 +1520,7 @@ final class ReleaseGateTests: XCTestCase {
         XCTAssertNil(URLSessionTransport.basicAuthorization(username: "  ", password: "pass"))
     }
 
-    func testHev1TagIsFoundOnlyAsABoxAndPlaylistStaysOnTheApp() async throws {
-        var file = Data()
+    func testHev1TagIsFoundOnlyAsABoxAndPlaylistStaysOnTheApp() {
         func atom(_ type: String, _ payload: Data = Data()) -> Data {
             var box = Data()
             let size = 8 + payload.count
@@ -1530,15 +1529,11 @@ final class ReleaseGateTests: XCTestCase {
             box.append(payload)
             return box
         }
-        file.append(atom("ftyp", Data(repeating: 0, count: 8)))
-        file.append(atom("moov", atom("hev1")))
-        let offsets = try await MP4Hev1.locate(length: file.count) { start, count in
-            let from = min(start, file.count)
-            let to = min(file.count, start + count)
-            return from < to ? file.subdata(in: from..<to) : Data()
-        }
-        XCTAssertEqual(offsets.count, 1)
-        var slice = file
+        let moov = atom("moov", atom("hev1"))
+        let payload = Data(moov.dropFirst(8))
+        let offsets = MP4Hev1.offsets(in: payload, fileOffset: 8)
+        XCTAssertEqual(offsets, [12])
+        var slice = moov
         MP4Hev1.apply(&slice, rangeStart: 0, offsets: offsets)
         XCTAssertNil(slice.range(of: Data("hev1".utf8)))
         XCTAssertNotNil(slice.range(of: Data("hvc1".utf8)))
