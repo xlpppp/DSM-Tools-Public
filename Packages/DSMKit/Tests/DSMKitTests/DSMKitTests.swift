@@ -1524,8 +1524,8 @@ final class ReleaseGateTests: XCTestCase {
         var file = Data()
         func atom(_ type: String, _ payload: Data = Data()) -> Data {
             var box = Data()
-            let size = UInt32(8 + payload.count).bigEndian
-            withUnsafeBytes(of: size) { box.append(contentsOf: $0) }
+            let size = 8 + payload.count
+            box.append(contentsOf: [UInt8((size >> 24) & 0xFF), UInt8((size >> 16) & 0xFF), UInt8((size >> 8) & 0xFF), UInt8(size & 0xFF)])
             box.append(contentsOf: Array(type.utf8))
             box.append(payload)
             return box
