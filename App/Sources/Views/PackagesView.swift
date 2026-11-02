@@ -54,7 +54,7 @@ struct PackagesView: View {
                 }
             } footer: {
                 if tab != .installed {
-                    Text("安装和更新暂需在 DSM 网页版的套件中心完成，App 内安装将在接口验证后加入。")
+                    Text("安装和更新仍在 DSM 网页版完成。已安装套件可以查看说明、启动、停止或卸载。")
                 }
             }
         }
@@ -80,6 +80,15 @@ struct PackagesView: View {
     }
 
     private func installedRow(_ p: InstalledPackage) -> some View {
+        NavigationLink {
+            PackageDetailView(package: p, summary: catalog[p.id]?.summary, working: working.contains(p.id),
+                              start: { toggle(p) }, uninstall: { remove(p) })
+        } label: {
+            rowBody(p)
+        }
+    }
+
+    private func rowBody(_ p: InstalledPackage) -> some View {
         HStack(spacing: 12) {
             PackageIcon(url: catalog[p.id]?.iconURL)
             VStack(alignment: .leading, spacing: 3) {
@@ -96,7 +105,7 @@ struct PackagesView: View {
             Spacer()
             if working.contains(p.id) {
                 ProgressView()
-            } else if p.startable {
+            } else {
                 Button {
                     if p.isRunning { pendingStop = p } else { toggle(p) }
                 } label: {
@@ -108,7 +117,6 @@ struct PackagesView: View {
                         .foregroundStyle(p.isRunning ? Theme.danger : Theme.good)
                 }
                 .buttonStyle(.plain)
-            } else {
                 StatusChip(text: p.statusLabel, color: p.isRunning ? Theme.good : Theme.secondaryText)
             }
         }
@@ -154,6 +162,56 @@ struct PackagesView: View {
             }
             if let list = try? await client.installedPackages() { installed = list }
             working.remove(p.id)
+        }
+    }
+
+    private func remove(_ p: InstalledPackage) {
+        guard let client = session.client else { return }
+        working.insert(p.id)
+        Task {
+            do {
+                try await client.uninstallPackage(p.id)
+            } catch {
+                alert = error.userMessage
+            }
+            if let list = try? await client.installedPackages() { installed = list }
+            working.remove(p.id)
+        }
+    }
+}
+
+private struct PackageDetailView: View {
+    let package: InstalledPackage
+    let summary: String?
+    let working: Bool
+    let start: () -> Void
+    let uninstall: () -> Void
+    @State private var confirmUninstall = false
+
+    var body: some View {
+        List {
+            Section {
+                Text(package.name).font(.title3.bold())
+                LabeledContent("版本", value: package.version)
+                LabeledContent("状态", value: package.statusLabel)
+                LabeledContent("标识", value: package.id)
+            }
+            if let text = package.description ?? summary, !text.isEmpty {
+                Section("说明") { Text(text) }
+            }
+            Section {
+                Button(package.isRunning ? "停止" : "启动") { start() }
+                    .disabled(working)
+                Button("卸载", role: .destructive) { confirmUninstall = true }
+                    .disabled(working)
+            }
+        }
+        .navigationTitle("套件")
+        .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog("卸载「\(package.name)」？", isPresented: $confirmUninstall, titleVisibility: .visible) {
+            Button("卸载", role: .destructive) { uninstall() }
+        } message: {
+            Text("套件及其数据会从 DSM 中删除。")
         }
     }
 }

@@ -21,6 +21,8 @@ final class SessionManager {
     private(set) var client: DSMClient?
     private(set) var endpoint: Endpoint?
     private(set) var deviceID: UUID?
+    /// Self-signed pin or nginx basic auth: AVPlayer must read bytes through the app transport.
+    private(set) var streamsMediaInApp = false
     /// Set by `logOut()`; stops network changes from signing back in until the user retries.
     private(set) var loggedOut = false
 
@@ -42,7 +44,14 @@ final class SessionManager {
             return
         }
         do {
-            let resolution = try await EndpointResolver().resolve(profile.endpoints)
+            let basic = URLSessionTransport.basicAuthorization(
+                username: profile.basicAuthUsername,
+                password: store.basicAuthPassword(for: profile.id) ?? "")
+            streamsMediaInApp = basic != nil
+            let resolution = try await EndpointResolver(
+                makeTransport: { URLSessionTransport(pinnedSHA256: $0.pinnedCertificateSHA256, timeout: 4, basicAuthorization: basic) },
+                makeSessionTransport: { URLSessionTransport(pinnedSHA256: $0.pinnedCertificateSHA256, timeout: 30, basicAuthorization: basic) }
+            ).resolve(profile.endpoints)
             let token = KeychainStore.get(KeychainStore.deviceTokenKey(profile.id))
             let result = try await resolution.client.login(account: profile.username, password: password,
                                                            otpCode: otp, deviceToken: token)
@@ -57,6 +66,7 @@ final class SessionManager {
             }
             client = resolution.client
             endpoint = resolution.endpoint
+            streamsMediaInApp = streamsMediaInApp || resolution.endpoint.pinnedCertificateSHA256 != nil
             state = .connected
         } catch let error as DSMError {
             guard deviceID == profile.id else { return }

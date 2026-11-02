@@ -34,13 +34,15 @@ extension HTTPTransport {
 /// fingerprint, which is how a self-signed DSM certificate gets trusted explicitly.
 public final class URLSessionTransport: NSObject, HTTPTransport, @unchecked Sendable {
     private let pinnedSHA256: String?
+    private let basicAuthorization: String?
     private let timeout: TimeInterval
     private var session: URLSession!
     private let lock = NSLock()
     private var lastSeenFingerprint: [String: String] = [:]
 
-    public init(pinnedSHA256: String? = nil, timeout: TimeInterval = 15) {
+    public init(pinnedSHA256: String? = nil, timeout: TimeInterval = 15, basicAuthorization: String? = nil) {
         self.pinnedSHA256 = pinnedSHA256?.normalizedFingerprint
+        self.basicAuthorization = basicAuthorization
         self.timeout = timeout
         super.init()
         let config = URLSessionConfiguration.ephemeral
@@ -50,18 +52,19 @@ public final class URLSessionTransport: NSObject, HTTPTransport, @unchecked Send
     }
 
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let request = authorized(request)
         try await run(request) { try await self.session.data(for: request) }
     }
 
     public func upload(_ request: URLRequest, fromFile file: URL) async throws -> (Data, HTTPURLResponse) {
         // Uploads can be large and slow; give them far more time than API calls.
-        var r = request
+        var r = authorized(request)
         r.timeoutInterval = 3600
         return try await run(r) { try await self.session.upload(for: r, fromFile: file) }
     }
 
     public func download(_ request: URLRequest) async throws -> (URL, HTTPURLResponse) {
-        var r = request
+        var r = authorized(request)
         r.timeoutInterval = 3600
         let (temp, response) = try await run(r) { () async throws -> (URL, URLResponse) in
             try await self.session.download(for: r)
@@ -99,6 +102,21 @@ public final class URLSessionTransport: NSObject, HTTPTransport, @unchecked Send
                 throw DSMError.transport(error.localizedDescription)
             }
         }
+    }
+
+    /// nginx auth_basic. `username:password` is not stored here; the caller passes the header value.
+    public static func basicAuthorization(username: String, password: String) -> String? {
+        let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return nil }
+        let token = Data("\(name):\(password)".utf8).base64EncodedString()
+        return "Basic \(token)"
+    }
+
+    private func authorized(_ request: URLRequest) -> URLRequest {
+        guard let basicAuthorization, request.value(forHTTPHeaderField: "Authorization") == nil else { return request }
+        var copy = request
+        copy.setValue(basicAuthorization, forHTTPHeaderField: "Authorization")
+        return copy
     }
 
     private func fingerprint(for host: String) -> String? {

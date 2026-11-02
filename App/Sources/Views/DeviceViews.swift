@@ -79,6 +79,8 @@ struct DeviceEditorView: View {
     @State private var name = ""
     @State private var username = ""
     @State private var password = ""
+    @State private var basicUser = ""
+    @State private var basicPassword = ""
     @State private var endpoints: [Endpoint] = []
     @State private var ssh = SSHSettings()
     @State private var sshLanPortText = "22"
@@ -144,6 +146,11 @@ struct DeviceEditorView: View {
             FieldDivider()
             SecureFieldRow(symbol: "lock", placeholder: profile == nil ? "密码" : "密码（留空则不修改）",
                            text: $password)
+            FieldDivider()
+            FieldRow(symbol: "person.badge.key", placeholder: "auth_basic 用户名（可留空）", text: $basicUser)
+            FieldDivider()
+            SecureFieldRow(symbol: "key", placeholder: profile == nil ? "auth_basic 密码" : "auth_basic 密码（留空则不修改）",
+                           text: $basicPassword)
         }
     }
 
@@ -290,6 +297,7 @@ struct DeviceEditorView: View {
         if let profile {
             name = profile.name
             username = profile.username
+            basicUser = profile.basicAuthUsername
             endpoints = profile.endpoints
             ssh = profile.ssh
             if ssh.lanHost.isEmpty && ssh.wanHost.isEmpty && !ssh.host.isEmpty {
@@ -322,8 +330,12 @@ struct DeviceEditorView: View {
                                     name: trimmedName.isEmpty ? (cleaned.first?.host ?? "群晖") : trimmedName,
                                     endpoints: cleaned,
                                     username: username.trimmingCharacters(in: .whitespaces),
+                                    basicAuthUsername: basicUser.trimmingCharacters(in: .whitespaces),
                                     ssh: ssh)
         store.save(updated, password: password.isEmpty ? nil : password)
+        if !updated.basicAuthUsername.isEmpty, !basicPassword.isEmpty {
+            store.setBasicAuthPassword(basicPassword, for: updated.id)
+        }
         if !sshPassword.isEmpty { KeychainStore.set(sshPassword, for: KeychainStore.sshPasswordKey(updated.id)) }
         if store.selectedID == updated.id {
             Task { await session.connect(to: updated, store: store) }

@@ -112,7 +112,7 @@ struct DriveListView: View {
     @State private var ascending = true
     @State private var search = ""
 
-    @State private var preview: RemoteFile?
+    @State private var preview: DriveItem?
     @State private var export: ExportItem?
     @State private var importing = false
     @State private var photoItems: [PhotosPickerItem] = []
@@ -173,7 +173,9 @@ struct DriveListView: View {
         .refreshable { await load() }
         .onChange(of: sortKey) { Task { await load() } }
         .onChange(of: ascending) { Task { await load() } }
-        .sheet(item: $preview) { FilePreviewView(file: $0) }
+        .sheet(item: $preview) { item in
+            DriveFilePreview(item: item)
+        }
         .sheet(item: $export) { ActivityView(items: $0.items) }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { upload(urls, scoped: true) }
@@ -271,14 +273,10 @@ struct DriveListView: View {
         loaded = true
     }
 
-    /// Opens in place through File Station when the item maps onto a File Station path
-    /// (text, images, audio and video preview); otherwise downloads it and hands it to the share sheet.
+    /// Drive's own download URL. Mapping the item onto a File Station path returns HTTP 404
+    /// when the file is not actually stored at `/home/Drive`.
     private func open(_ item: DriveItem) {
-        if let path = item.fileStationPath {
-            preview = RemoteFile(path: path, name: item.name, isDirectory: false, size: item.size, modified: item.modified)
-        } else {
-            download(item)
-        }
+        preview = item
     }
 
     private func download(_ item: DriveItem) {
@@ -355,6 +353,20 @@ struct DriveListView: View {
             if urls.count < picked.count { alert = "有 \(picked.count - urls.count) 项无法读取（可能仍在 iCloud 中下载）。" }
             upload(urls, scoped: false)
         }
+    }
+}
+
+private struct DriveFilePreview: View {
+    let item: DriveItem
+    @Environment(SessionManager.self) private var session
+
+    var body: some View {
+        FilePreviewView(file: RemoteFile(path: item.path, name: item.name, isDirectory: false,
+                                          size: item.size, modified: item.modified),
+                        remoteURL: {
+            guard let client = session.client else { throw DSMError.notAuthenticated }
+            return try await client.driveDownloadURL(for: item)
+        })
     }
 }
 

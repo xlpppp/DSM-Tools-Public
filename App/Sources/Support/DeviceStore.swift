@@ -41,6 +41,9 @@ final class DeviceStore {
             devices.append(profile)
         }
         if let password { KeychainStore.set(password, for: KeychainStore.passwordKey(profile.id)) }
+        if profile.basicAuthUsername.isEmpty {
+            KeychainStore.set(nil, for: KeychainStore.basicAuthPasswordKey(profile.id))
+        }
         if selectedID == nil { select(profile.id) }
         persist()
     }
@@ -49,6 +52,7 @@ final class DeviceStore {
         KeychainStore.set(nil, for: KeychainStore.sshPasswordKey(id))
         devices.removeAll { $0.id == id }
         KeychainStore.set(nil, for: KeychainStore.passwordKey(id))
+        KeychainStore.set(nil, for: KeychainStore.basicAuthPasswordKey(id))
         KeychainStore.set(nil, for: KeychainStore.deviceTokenKey(id))
         RecentStore.shared.forget(id)
         if selectedID == id { select(devices.first?.id) }
@@ -61,6 +65,12 @@ final class DeviceStore {
     }
 
     func password(for id: UUID) -> String? { KeychainStore.get(KeychainStore.passwordKey(id)) }
+
+    func basicAuthPassword(for id: UUID) -> String? { KeychainStore.get(KeychainStore.basicAuthPasswordKey(id)) }
+
+    func setBasicAuthPassword(_ password: String?, for id: UUID) {
+        KeychainStore.set(password, for: KeychainStore.basicAuthPasswordKey(id))
+    }
 
     /// Records the certificate fingerprint the user chose to trust for one address.
     func trust(fingerprint: String, endpointID: UUID, deviceID: UUID) {

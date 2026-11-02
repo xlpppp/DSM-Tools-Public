@@ -33,6 +33,7 @@ enum KeychainStore {
     }
 
     static func passwordKey(_ id: UUID) -> String { "password.\(id.uuidString)" }
+    static func basicAuthPasswordKey(_ id: UUID) -> String { "basicAuth.\(id.uuidString)" }
     static func deviceTokenKey(_ id: UUID) -> String { "deviceToken.\(id.uuidString)" }
     static func sshPasswordKey(_ id: UUID) -> String { "sshPassword.\(id.uuidString)" }
 }

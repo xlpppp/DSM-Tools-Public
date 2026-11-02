@@ -1505,3 +1505,25 @@ final class SynologyDriveTests: XCTestCase {
         XCTAssertNotNil(status.connectionError)
     }
 }
+
+final class ReleaseGateTests: XCTestCase {
+    func testDSMVersionHidesVideoStationOnlyAfter722() {
+        XCTAssertFalse(SystemInfo.isNewer(than: 7, 2, 2, firmware: "7.2.2-72806"))
+        XCTAssertFalse(SystemInfo.isNewer(than: 7, 2, 2, firmware: "7.2.1-69057"))
+        XCTAssertTrue(SystemInfo.isNewer(than: 7, 2, 2, firmware: "7.2.3-10000"))
+        XCTAssertTrue(SystemInfo.isNewer(than: 7, 2, 2, firmware: "7.3.0-12345"))
+        XCTAssertFalse(SystemInfo.isNewer(than: 7, 2, 2, firmware: nil))
+    }
+
+    func testBasicAuthorizationHeader() {
+        XCTAssertEqual(URLSessionTransport.basicAuthorization(username: "user", password: "pass"), "Basic dXNlcjpwYXNz")
+        XCTAssertNil(URLSessionTransport.basicAuthorization(username: "  ", password: "pass"))
+    }
+
+    func testOldDeviceProfileDecodesWithoutBasicAuth() throws {
+        let data = Data(#"{"id":"00000000-0000-0000-0000-000000000009","name":"nas","username":"admin","endpoints":[{"id":"00000000-0000-0000-0000-00000000000a","kind":"lan","host":"192.0.2.10","port":5001,"useHTTPS":true}]}"#.utf8)
+        let profile = try JSONDecoder().decode(DeviceProfile.self, from: data)
+        XCTAssertEqual(profile.basicAuthUsername, "")
+        XCTAssertEqual(profile.endpoints.first?.host, "192.0.2.10")
+    }
+}

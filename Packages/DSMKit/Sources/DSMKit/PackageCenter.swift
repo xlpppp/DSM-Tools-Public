@@ -91,6 +91,10 @@ extension DSMClient {
     public func stopPackage(_ id: String) async throws {
         let _: EmptyData = try await call("SYNO.Core.Package.Control", method: "stop", version: 1, params: ["id": id])
     }
+
+    public func uninstallPackage(_ id: String) async throws {
+        let _: EmptyData = try await call("SYNO.Core.Package.Installation", method: "uninstall", version: 1, params: ["id": id])
+    }
 }
 
 /// Compares dotted/dashed package versions such as "3.9.2-2620" numerically.

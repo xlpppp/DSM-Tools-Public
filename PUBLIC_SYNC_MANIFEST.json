@@ -34,6 +34,7 @@
                   "App/Sources/Views/Docker/DockerView.swift",
                   "App/Sources/Views/DownloadsView.swift",
                   "App/Sources/Views/Drive/DriveView.swift",
+                  "App/Sources/Views/Files/BookReaderView.swift",
                   "App/Sources/Views/Files/FileBrowserView.swift",
                   "App/Sources/Views/Files/FilePreviewView.swift",
                   "App/Sources/Views/Files/ShareViews.swift",

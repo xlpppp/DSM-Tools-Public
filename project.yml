@@ -11,6 +11,9 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     exactVersion: 1.20.0
+  ZIPFoundation:
+    url: https://github.com/weichsel/ZIPFoundation
+    exactVersion: 0.9.19
 targets:
   NASHelper:
     type: application
@@ -25,6 +28,8 @@ targets:
       - package: DSMKit
         product: MediaKit
       - package: SwiftTerm
+      - package: ZIPFoundation
+        product: ZIPFoundation
     scheme: {}
     settings:
       base:

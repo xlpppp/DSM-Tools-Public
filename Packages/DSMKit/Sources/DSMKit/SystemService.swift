@@ -38,6 +38,18 @@ public struct SystemInfo: Decodable, Sendable, Equatable {
         systemTime = try c.decodeIfPresent(FlexString.self, forKey: .time)?.value
     }
 
+    /// True when `firmware` is newer than major.minor.patch. "7.2.2-72806" is not newer than 7.2.2.
+    public static func isNewer(than major: Int, _ minor: Int, _ patch: Int, firmware: String?) -> Bool {
+        guard let firmware else { return false }
+        let nums = firmware.split(whereSeparator: { !$0.isNumber }).prefix(3).compactMap { Int($0) }
+        guard !nums.isEmpty else { return false }
+        let parts = nums + Array(repeating: 0, count: max(0, 3 - nums.count))
+        let current = (parts[0], parts[1], parts[2])
+        if current.0 != major { return current.0 > major }
+        if current.1 != minor { return current.1 > minor }
+        return current.2 > patch
+    }
+
     /// DSM reports uptime as "days:hours:minutes:seconds" (or "hours:minutes:seconds").
     public var upTimeDays: Int? {
         guard let parts = upTime?.split(separator: ":").compactMap({ Int($0) }), parts.count >= 3 else { return nil }

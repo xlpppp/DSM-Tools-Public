@@ -55,16 +55,43 @@ public struct DeviceProfile: Codable, Hashable, Identifiable, Sendable {
     public var name: String
     public var endpoints: [Endpoint]
     public var username: String
+    /// nginx auth_basic user in front of DSM. Empty means the proxy does not ask for basic auth.
+    public var basicAuthUsername: String
     /// SSH is configured separately: its host, port and account can differ from DSM's.
     public var ssh: SSHSettings
 
     public init(id: UUID = UUID(), name: String, endpoints: [Endpoint], username: String,
-                ssh: SSHSettings = SSHSettings()) {
+                basicAuthUsername: String = "", ssh: SSHSettings = SSHSettings()) {
         self.id = id
         self.name = name
         self.endpoints = endpoints
         self.username = username
+        self.basicAuthUsername = basicAuthUsername
         self.ssh = ssh
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, endpoints, username, basicAuthUsername, ssh
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        endpoints = try c.decode([Endpoint].self, forKey: .endpoints)
+        username = try c.decode(String.self, forKey: .username)
+        basicAuthUsername = try c.decodeIfPresent(String.self, forKey: .basicAuthUsername) ?? ""
+        ssh = try c.decodeIfPresent(SSHSettings.self, forKey: .ssh) ?? SSHSettings()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(endpoints, forKey: .endpoints)
+        try c.encode(username, forKey: .username)
+        try c.encode(ssh, forKey: .ssh)
+        if !basicAuthUsername.isEmpty { try c.encode(basicAuthUsername, forKey: .basicAuthUsername) }
     }
 }
 

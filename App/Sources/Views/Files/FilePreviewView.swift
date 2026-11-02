@@ -3,19 +3,34 @@ import AVKit
 import CoreMedia
 import DSMKit
 
+func previewBytes(client: DSMClient, path: String, remoteURL: (() async throws -> URL)?) async throws -> Data {
+    if let remoteURL {
+        let (data, response) = try await client.fetchResponse(URLRequest(url: try await remoteURL()))
+        guard (200..<300).contains(response.statusCode) else { throw DSMError.transport("HTTP \(response.statusCode)") }
+        return data
+    }
+    return try await client.fileData(at: path)
+}
+
 /// Opens a NAS file in place: text and logs, images, audio and video; anything else shows its details.
 struct FilePreviewView: View {
     let file: RemoteFile
+    /// When set, bytes and playback use this URL instead of File Station. Drive passes its own download URL.
+    var remoteURL: (() async throws -> URL)?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Group {
-                switch file.kind {
-                case .text: TextFileView(file: file)
-                case .image: ImageFileView(file: file)
-                case .audio, .video: MediaFileView(file: file)
-                default: FileDetailView(file: file)
+                if BookKind.matches(file.name) {
+                    BookReaderView(file: file, remoteURL: remoteURL)
+                } else {
+                    switch file.kind {
+                    case .text: TextFileView(file: file, remoteURL: remoteURL)
+                    case .image: ImageFileView(file: file, remoteURL: remoteURL)
+                    case .audio, .video: MediaFileView(file: file, remoteURL: remoteURL)
+                    default: FileDetailView(file: file, remoteURL: remoteURL)
+                    }
                 }
             }
             .navigationTitle(file.name)
@@ -31,6 +46,7 @@ struct FilePreviewView: View {
 
 private struct TextFileView: View {
     let file: RemoteFile
+    var remoteURL: (() async throws -> URL)?
     /// Larger files are slow to render on a phone; offer a download instead.
     static let limit: Int64 = 8 * 1024 * 1024
 
@@ -70,11 +86,15 @@ private struct TextFileView: View {
         }
         guard let client = session.client else { return }
         do {
-            let data = try await client.fileData(at: file.path)
+            let data = try await Self.bytes(client: client, path: file.path, remoteURL: remoteURL)
             text = Self.decode(data)
         } catch {
             self.error = error.userMessage
         }
+    }
+
+    static func bytes(client: DSMClient, path: String, remoteURL: (() async throws -> URL)?) async throws -> Data {
+        try await previewBytes(client: client, path: path, remoteURL: remoteURL)
     }
 
     /// UTF-8 first, then GB18030 (common for Chinese Windows text files), then Latin-1 so something always shows.
@@ -138,6 +158,7 @@ private struct ReadOnlyTextView: UIViewRepresentable {
 
 private struct ImageFileView: View {
     let file: RemoteFile
+    var remoteURL: (() async throws -> URL)?
     @Environment(SessionManager.self) private var session
     @State private var image: UIImage?
     @State private var error: String?
@@ -178,7 +199,7 @@ private struct ImageFileView: View {
         .task {
             guard let client = session.client else { return }
             do {
-                let data = try await client.fileData(at: file.path)
+                let data = try await TextFileView.bytes(client: client, path: file.path, remoteURL: remoteURL)
                 if let decoded = UIImage(data: data) { image = decoded } else { error = "不支持的图片格式" }
             } catch {
                 self.error = error.userMessage
@@ -191,6 +212,7 @@ private struct ImageFileView: View {
 
 private struct MediaFileView: View {
     let file: RemoteFile
+    var remoteURL: (() async throws -> URL)?
     @Environment(SessionManager.self) private var session
     @Environment(\.openURL) private var openURL
     @State private var player: AVPlayer?
@@ -199,6 +221,7 @@ private struct MediaFileView: View {
     /// Set when the file has a picture the system player cannot show (it then plays only the sound).
     @State private var videoIssue: String?
     @State private var externalError: String?
+    @State private var mediaLoader: PinnedMediaLoader?
 
     /// Containers and codecs AVPlayer plays natively. Others (mkv, avi, rmvb, ape…) need the media phase's player.
     /// MPEG-TS is left out: AVPlayer only plays it inside HLS, a bare .ts file gives sound at best.
@@ -303,19 +326,8 @@ private struct MediaFileView: View {
         guard Self.playable.contains(file.fileExtension), let client = session.client else { return }
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: file.kind == .video ? .moviePlayback : .default)
         do {
-            let url: URL
-            if session.endpoint?.pinnedCertificateSHA256 != nil {
-                // The system player cannot use a certificate trusted only inside this app, so fetch the file first.
-                status = "该设备使用自签证书，正在下载后播放…"
-                url = try await client.downloadFile(at: file.path)
-                localCopy = url
-            } else {
-                url = try await client.downloadURL(for: file.path)
-            }
-            // The streaming URL ends in entry.cgi, so tell AVFoundation the type instead of letting it guess.
-            var options: [String: Any] = [:]
-            if let mime = Self.mimeTypes[file.fileExtension] { options[AVURLAssetOverrideMIMETypeKey] = mime }
-            let asset = AVURLAsset(url: url, options: options)
+            let url = try await remoteURL?() ?? client.downloadURL(for: file.path)
+            let asset = streamingAsset(client: client, url: url)
             if file.kind == .video { videoIssue = await Self.videoIssue(in: asset) }
             let item = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             player = item
@@ -323,6 +335,20 @@ private struct MediaFileView: View {
         } catch {
             status = error.userMessage
         }
+    }
+
+    /// Plays the remote URL directly. A pinned certificate or nginx basic auth cannot be handed to AVPlayer,
+    /// so those requests are streamed through the app transport instead of downloading the whole file first.
+    private func streamingAsset(client: DSMClient, url: URL) -> AVURLAsset {
+        var options: [String: Any] = [:]
+        if let mime = Self.mimeTypes[file.fileExtension] { options[AVURLAssetOverrideMIMETypeKey] = mime }
+        guard session.streamsMediaInApp else { return AVURLAsset(url: url, options: options) }
+        let mime = Self.mimeTypes[file.fileExtension] ?? "application/octet-stream"
+        let loader = PinnedMediaLoader(client: client, source: url, mime: mime)
+        mediaLoader = loader
+        let asset = AVURLAsset(url: loader.assetURL)
+        asset.resourceLoader.setDelegate(loader, queue: loader.queue)
+        return asset
     }
 
     /// Why the picture would not show, if it would not. AVPlayer plays the audio track of a file whose
@@ -353,6 +379,7 @@ private struct MediaFileView: View {
 
 private struct FileDetailView: View {
     let file: RemoteFile
+    var remoteURL: (() async throws -> URL)?
     @Environment(SessionManager.self) private var session
     @State private var export: ExportItem?
     @State private var downloading = false
@@ -394,7 +421,16 @@ private struct FileDetailView: View {
         downloading = true
         Task {
             do {
-                export = ExportItem(items: [try await client.downloadFile(at: file.path)])
+                if let remoteURL {
+                    let data = try await TextFileView.bytes(client: client, path: file.path, remoteURL: remoteURL)
+                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+                    try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    let target = folder.appendingPathComponent(file.name)
+                    try data.write(to: target)
+                    export = ExportItem(items: [target])
+                } else {
+                    export = ExportItem(items: [try await client.downloadFile(at: file.path)])
+                }
             } catch {
                 self.error = error.userMessage
             }

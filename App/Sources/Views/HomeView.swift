@@ -80,6 +80,7 @@ struct HomeView: View {
     @State private var otpCode = ""
     @State private var alerts: [HealthAlert]?
     @State private var webEndpoint: Endpoint?
+    @State private var hideVideoStation = false
     @AppStorage(AppSettings.Key.homeShowRecentPhotos) private var showRecentPhotos = AppSettings.defaultHomeShowRecentPhotos
     @AppStorage(AppSettings.Key.homeShowRecentFiles) private var showRecentFiles = AppSettings.defaultHomeShowRecentFiles
 
@@ -150,6 +151,7 @@ struct HomeView: View {
             }
         }
         .task(id: isConnected) { if isConnected { await loadAlerts() } else { alerts = nil } }
+        .task(id: session.client != nil) { await refreshFirmware() }
         .fullScreenCover(item: $webEndpoint) { WebDSMView(device: device, endpoint: $0) }
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $switchingDevice) { DeviceListView() }
@@ -186,6 +188,15 @@ struct HomeView: View {
         TransferCenter.shared.running(.upload, device: device.id) + TransferCenter.shared.running(.download, device: device.id)
     }
 
+    private func refreshFirmware() async {
+        guard let client = session.client else {
+            hideVideoStation = false
+            return
+        }
+        let version = try? await client.systemInfo().firmwareVersion
+        hideVideoStation = SystemInfo.isNewer(than: 7, 2, 2, firmware: version)
+    }
+
     private func loadAlerts() async {
         guard let client = session.client else { return }
         alerts = await client.scanHealth(since: Date(timeIntervalSinceNow: -24 * 3600))
@@ -199,7 +210,7 @@ struct HomeView: View {
 
     private var moduleGrid: some View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 18) {
-            ForEach(Module.allCases) { module in
+            ForEach(Module.allCases.filter { !hideVideoStation || $0 != .video }) { module in
                 NavigationLink(value: module) {
                     HomeModuleTile(module: module)
                 }
