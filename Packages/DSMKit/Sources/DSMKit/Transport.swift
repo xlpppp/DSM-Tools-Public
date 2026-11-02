@@ -53,7 +53,7 @@ public final class URLSessionTransport: NSObject, HTTPTransport, @unchecked Send
 
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let request = authorized(request)
-        try await run(request) { try await self.session.data(for: request) }
+        return try await run(request) { try await self.session.data(for: request) }
     }
 
     public func upload(_ request: URLRequest, fromFile file: URL) async throws -> (Data, HTTPURLResponse) {
