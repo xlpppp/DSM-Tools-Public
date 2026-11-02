@@ -76,57 +76,46 @@ public enum MP4Hev1 {
     public static func locate(length: Int?, fetch: (Int, Int) async throws -> Data) async throws -> [Int] {
         let head = try await fetch(0, 256 * 1024)
         guard head.count >= 8 else { return [] }
-        var offset = 0
-        while offset + 8 <= head.count {
-            guard let atom = atomInfo(head, offset, fileLength: length) else { break }
-            if atom.type == "moov" {
-                let box = offset + atom.size <= head.count
-                    ? head.subdata(in: offset..<(offset + atom.size))
-                    : try await fetch(offset, atom.size)
-                return moovOffsets(box, fileOffset: offset, header: atom.header)
-            }
-            if atom.type == "mdat" {
-                let moovAt = offset + atom.size
-                let marker = try await fetch(moovAt, 16)
-                guard let next = atomInfo(marker, 0, fileLength: nil), next.type == "moov" else { return [] }
-                let box = try await fetch(moovAt, next.size)
-                return moovOffsets(box, fileOffset: moovAt, header: next.header)
-            }
-            if offset + atom.size > head.count { break }
-            offset += atom.size
+        if let moov = box("moov", in: head) {
+            let boxData = moov.start + moov.size <= head.count
+                ? head.subdata(in: moov.start..<(moov.start + moov.size))
+                : try await fetch(moov.start, moov.size)
+            return moovOffsets(boxData, fileOffset: moov.start, header: moov.header)
         }
+        if let mdat = box("mdat", in: head) {
+            let moovAt = mdat.start + mdat.size
+            let marker = try await fetch(moovAt, 16)
+            guard let next = box("moov", in: marker), next.start == 0 else { return [] }
+            let boxData = try await fetch(moovAt, next.size)
+            return moovOffsets(boxData, fileOffset: moovAt, header: next.header)
+        }
+        // moov sits in the header but the size chain did not line up. Search only that header.
+        if head.range(of: Data("moov".utf8)) != nil { return offsets(in: head, fileOffset: 0) }
         return []
     }
 
-    private struct Atom {
-        var size: Int
-        var header: Int
-        var type: String
+    private static func box(_ type: String, in data: Data) -> (start: Int, size: Int, header: Int)? {
+        let tag = [UInt8](type.utf8)
+        let bytes = [UInt8](data)
+        var index = 0
+        while index + 8 <= bytes.count {
+            let size = (Int(bytes[index]) << 24) | (Int(bytes[index + 1]) << 16)
+                | (Int(bytes[index + 2]) << 8) | Int(bytes[index + 3])
+            if Array(bytes[(index + 4)..<(index + 8)]) == tag, size >= 8 {
+                return (index, size, 8)
+            }
+            if size >= 8, index + size <= bytes.count, index + size > index {
+                index += size
+            } else {
+                break
+            }
+        }
+        return nil
     }
 
     private static func moovOffsets(_ box: Data, fileOffset: Int, header: Int) -> [Int] {
         guard box.count > header else { return [] }
         let end = min(box.count, box.count)
         return offsets(in: box.subdata(in: header..<end), fileOffset: fileOffset + header)
-    }
-
-    private static func atomInfo(_ data: Data, _ offset: Int, fileLength: Int?) -> Atom? {
-        guard offset + 8 <= data.count else { return nil }
-        let bytes = [UInt8](data)
-        let size32 = (Int(bytes[offset]) << 24) | (Int(bytes[offset + 1]) << 16)
-            | (Int(bytes[offset + 2]) << 8) | Int(bytes[offset + 3])
-        let type = String(bytes[(offset + 4)..<(offset + 8)].map { Character(UnicodeScalar($0)) })
-        var header = 8
-        var size = size32
-        if size32 == 1, offset + 16 <= data.count {
-            header = 16
-            var wide = 0
-            for shift in 0..<8 { wide = (wide << 8) | Int(bytes[offset + 8 + shift]) }
-            size = wide
-        } else if size32 == 0, let fileLength, fileLength > offset {
-            size = fileLength - offset
-        }
-        guard size >= header else { return nil }
-        return Atom(size: size, header: header, type: type)
     }
 }
