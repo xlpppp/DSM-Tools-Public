@@ -49,6 +49,9 @@ final class JellyfinTests: XCTestCase {
         t.responses["/Items/M1/PlaybackInfo"] = (200, #"{"MediaSources":[{"Id":"MS","Container":"mkv","TranscodingUrl":"videos/M1/master.m3u8?PlaySessionId=P1"}],"PlaySessionId":"P1"}"#)
         let playback = try await client.playbackURL(for: items[0])
         XCTAssertEqual(playback.absoluteString, "http://192.0.2.5:8096/videos/M1/master.m3u8?PlaySessionId=P1")
+        let posted = String(data: t.requests.last?.httpBody ?? Data(), encoding: .utf8) ?? ""
+        XCTAssertFalse(posted.contains("hevc"))
+        XCTAssertTrue(posted.contains("h264"))
     }
 
     func testEpisodeOrderUsesScrapedNumberThenFileName() {

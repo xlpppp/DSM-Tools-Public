@@ -1520,6 +1520,42 @@ final class ReleaseGateTests: XCTestCase {
         XCTAssertNil(URLSessionTransport.basicAuthorization(username: "  ", password: "pass"))
     }
 
+    func testHev1TagIsFoundOnlyAsABoxAndPlaylistStaysOnTheApp() async throws {
+        var file = Data()
+        func atom(_ type: String, _ payload: Data = Data()) -> Data {
+            var box = Data()
+            let size = UInt32(8 + payload.count).bigEndian
+            withUnsafeBytes(of: size) { box.append(contentsOf: $0) }
+            box.append(contentsOf: Array(type.utf8))
+            box.append(payload)
+            return box
+        }
+        file.append(atom("ftyp", Data(repeating: 0, count: 8)))
+        file.append(atom("moov", atom("hev1")))
+        let offsets = try await MP4Hev1.locate(length: file.count) { start, count in
+            let from = min(start, file.count)
+            let to = min(file.count, start + count)
+            return from < to ? file.subdata(in: from..<to) : Data()
+        }
+        XCTAssertEqual(offsets.count, 1)
+        var slice = file
+        MP4Hev1.apply(&slice, rangeStart: 0, offsets: offsets)
+        XCTAssertNil(slice.range(of: Data("hev1".utf8)))
+        XCTAssertNotNil(slice.range(of: Data("hvc1".utf8)))
+
+        let playlist = """
+        #EXTM3U
+        https://nas.example:8096/v/0.ts?k=1
+        next.ts
+        #EXT-X-KEY:METHOD=AES-128,URI="https://nas.example:8096/key"
+        """
+        let rewritten = rewriteMediaPlaylist(playlist, upstream: URL(string: "https://nas.example:8096/v/master.m3u8")!, scheme: "nasmedia")
+        XCTAssertTrue(rewritten.contains("nasmedia://nas.example:8096/v/0.ts?k=1"))
+        XCTAssertTrue(rewritten.contains("\nnext.ts"))
+        XCTAssertTrue(rewritten.contains("URI=\"nasmedia://nas.example:8096/key\""))
+        XCTAssertEqual(SnapshotSchedule(hour: 3, minute: 5, keep: 10).json.contains("\"hour\":3"), true)
+    }
+
     func testOldDeviceProfileDecodesWithoutBasicAuth() throws {
         let data = Data(#"{"id":"00000000-0000-0000-0000-000000000009","name":"nas","username":"admin","endpoints":[{"id":"00000000-0000-0000-0000-00000000000a","kind":"lan","host":"192.0.2.10","port":5001,"useHTTPS":true}]}"#.utf8)
         let profile = try JSONDecoder().decode(DeviceProfile.self, from: data)

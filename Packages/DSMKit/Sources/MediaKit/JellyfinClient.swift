@@ -271,8 +271,8 @@ public final class JellyfinClient: @unchecked Sendable {
         guard let source = info.MediaSources.first else { throw ServiceError.invalidResponse }
         let container = source.Container?.lowercased() ?? ""
         let native = ["mp4", "m4v", "mov"].contains(container)
-        if native, let direct = source.DirectStreamUrl, let url = resolve(direct) { return url }
-        if let transcode = source.TranscodingUrl, let url = resolve(transcode) { return url }
+        if native, let direct = source.DirectStreamUrl, let url = resolve(direct) { return withAPIKey(url) }
+        if let transcode = source.TranscodingUrl, let url = resolve(transcode) { return withAPIKey(url) }
         return videoURL(for: item, mediaSourceID: source.Id ?? item.id, playSessionID: info.PlaySessionId)
     }
 
@@ -321,7 +321,7 @@ public final class JellyfinClient: @unchecked Sendable {
                 "DirectPlayProfiles": [[
                     "Container": "mp4,m4v,mov",
                     "Type": "Video",
-                    "VideoCodec": "h264,hevc",
+                    "VideoCodec": "h264",
                     "AudioCodec": "aac,mp3,ac3,eac3",
                 ]],
                 "TranscodingProfiles": [[
@@ -352,6 +352,24 @@ public final class JellyfinClient: @unchecked Sendable {
     /// Image requests need the token too; use this to fetch through the pinned transport.
     public func fetch(_ url: URL) async throws -> Data {
         try await http.data("GET", url, headers: headers)
+    }
+
+    /// Media bytes, including the Emby/Jellyfin token. AVPlayer cannot add that header or trust a pinned certificate.
+    public func fetchMedia(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        var copy = request
+        for (key, value) in headers where copy.value(forHTTPHeaderField: key) == nil {
+            copy.setValue(value, forHTTPHeaderField: key)
+        }
+        return try await http.transport.send(copy)
+    }
+
+    private func withAPIKey(_ url: URL) -> URL {
+        guard let token, !token.isEmpty, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        var items = parts.queryItems ?? []
+        guard !items.contains(where: { $0.name == "api_key" }) else { return url }
+        items.append(URLQueryItem(name: "api_key", value: token))
+        parts.queryItems = items
+        return parts.url ?? url
     }
 }
 

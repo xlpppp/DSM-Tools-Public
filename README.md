@@ -2,7 +2,7 @@
 
 SwiftUI iOS app for managing a Synology DSM NAS.
 
-面向群晖 DSM 的 iPhone / iPad 管理应用，使用 SwiftUI 编写。源码里包含设备连接、文件、照片、Video Station、Audio Station、Docker、Synology Drive、Cloud Sync、下载、SSH/SFTP、资源监控、套件、日志、虚拟机，以及 Emby、Jellyfin、Immich、Navidrome。列出这些模块只说明源码中有对应界面，不表示每项都已在真机验收。
+面向群晖 DSM 的 iPhone / iPad 管理应用，使用 SwiftUI 编写。源码里包含设备连接、文件、照片、电子书阅读、Video Station、Audio Station、Docker、Synology Drive、Cloud Sync、下载、SSH/SFTP、资源监控、套件、日志、虚拟机、Snapshot Replication，以及 Emby、Jellyfin、Immich、Navidrome。列出这些模块只说明源码中有对应界面，不表示每项都已在真机验收。
 
 ## 技术栈
 

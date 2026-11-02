@@ -2,7 +2,7 @@ import SwiftUI
 import DSMKit
 
 enum Module: String, CaseIterable, Identifiable, Hashable {
-    case files, drive, photos, audio, video, download, cloudSync, packages, docker, vm, storage, logs, terminal, services, system
+    case files, drive, photos, audio, video, download, cloudSync, packages, docker, vm, storage, snapshot, logs, terminal, services, system
 
     var id: String { rawValue }
 
@@ -19,6 +19,7 @@ enum Module: String, CaseIterable, Identifiable, Hashable {
         case .docker: return "Docker"
         case .vm: return "虚拟机"
         case .storage: return "存储"
+        case .snapshot: return "快照复制"
         case .logs: return "日志"
         case .terminal: return "终端"
         case .services: return "影音服务"
@@ -39,6 +40,7 @@ enum Module: String, CaseIterable, Identifiable, Hashable {
         case .docker: return "cube.box.fill"
         case .vm: return "desktopcomputer"
         case .storage: return "internaldrive.fill"
+        case .snapshot: return "clock.arrow.circlepath"
         case .logs: return "list.bullet.rectangle.fill"
         case .terminal: return "terminal.fill"
         case .services: return "play.tv.fill"
@@ -59,6 +61,7 @@ enum Module: String, CaseIterable, Identifiable, Hashable {
         case .docker: return Color(hex: 0x0EA5E9)
         case .vm: return Color(hex: 0x14B8A6)
         case .storage: return Color(hex: 0x475569)
+        case .snapshot: return Color(hex: 0x0F766E)
         case .logs: return Color(hex: 0x2563EB)
         case .terminal: return Color(hex: 0x0F172A)
         case .services: return Color(hex: 0x7C3AED)
@@ -138,6 +141,7 @@ struct HomeView: View {
             case .audio: MusicView()
             case .video: VideoLibraryView()
             case .storage: StorageView()
+            case .snapshot: SnapshotView()
             case .system: SystemHubView()
             }
         }

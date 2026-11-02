@@ -147,7 +147,10 @@ struct MusicView: View {
 
     /// Self-signed (pinned) NAS: songs are downloaded through the app before playing.
     private func configurePlayer(_ client: DSMClient) {
-        if session.endpoint?.pinnedCertificateSHA256 != nil, let host = session.endpoint?.host {
+        if session.streamsMediaInApp {
+            if let host = session.endpoint?.host { player.pinnedHosts.insert(host) }
+            player.mediaFetch = { request in try await client.fetchResponse(request) }
+        } else if session.endpoint?.pinnedCertificateSHA256 != nil, let host = session.endpoint?.host {
             player.pinnedHosts.insert(host)
             player.downloader = { url, name in try await client.download(url, as: name) }
         }

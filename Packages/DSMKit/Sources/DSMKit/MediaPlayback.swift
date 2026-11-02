@@ -1,0 +1,132 @@
+import Foundation
+
+/// Rewrites an HLS playlist so every request for this server stays on a custom URL scheme.
+/// AVPlayer then asks the app for each segment, which is how a pinned certificate and extra headers are applied.
+public func rewriteMediaPlaylist(_ text: String, upstream: URL, scheme: String) -> String {
+    guard let host = upstream.host, !host.isEmpty else { return text }
+    let port = upstream.port
+    func mapped(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), let found = url.host,
+              found.caseInsensitiveCompare(host) == .orderedSame else { return raw }
+        if let port, let foundPort = url.port, foundPort != port { return raw }
+        var parts = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        parts?.scheme = scheme
+        return parts?.string ?? raw
+    }
+    let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+        let raw = String(line)
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") { return mapped(trimmed) }
+        return raw.contains("URI=") ? raw.withURIRewrite(mapped) : raw
+    }
+    return lines.joined(separator: "\n")
+}
+
+private extension String {
+    /// Replaces `URI="..."` values. The regex above is not used; this walks the quotes directly.
+    func withURIRewrite(_ map: (String) -> String) -> String {
+        var out = ""
+        var rest = self[...]
+        while let range = rest.range(of: "URI=\"") {
+            out += rest[..<range.upperBound]
+            rest = rest[range.upperBound...]
+            guard let end = rest.firstIndex(of: "\"") else {
+                out += rest
+                return out
+            }
+            out += map(String(rest[..<end]))
+            out.append("\"")
+            rest = rest[rest.index(after: end)...]
+        }
+        out += rest
+        return out
+    }
+}
+
+/// Finds `hev1` sample-entry tags inside an MP4 `moov` atom.
+/// iOS plays the same HEVC samples when that tag is `hvc1` and the `hvcC` box is already present.
+/// Replacing the four bytes does not change the file size, so range requests stay valid.
+public enum MP4Hev1 {
+    public static func offsets(in moovPayload: Data, fileOffset: Int) -> [Int] {
+        let bytes = [UInt8](moovPayload)
+        guard bytes.count > 8 else { return [] }
+        var found: [Int] = []
+        var index = 4
+        while index + 4 <= bytes.count {
+            if bytes[index] == 0x68, bytes[index + 1] == 0x65, bytes[index + 2] == 0x76, bytes[index + 3] == 0x31 {
+                let size = (Int(bytes[index - 4]) << 24) | (Int(bytes[index - 3]) << 16)
+                    | (Int(bytes[index - 2]) << 8) | Int(bytes[index - 1])
+                if size >= 8, size < 20_000_000 { found.append(fileOffset + index) }
+            }
+            index += 1
+        }
+        return found
+    }
+
+    public static func apply(_ data: inout Data, rangeStart: Int, offsets: [Int]) {
+        for offset in offsets {
+            let local = offset - rangeStart
+            guard local >= 0, local + 4 <= data.count else { continue }
+            data.replaceSubrange(local..<(local + 4), with: [0x68, 0x76, 0x63, 0x31])
+        }
+    }
+
+    /// Reads only the file header and, when `moov` is at the end, that atom. `mdat` is not downloaded.
+    public static func locate(length: Int?, fetch: (Int, Int) async throws -> Data) async throws -> [Int] {
+        let head = try await fetch(0, 256 * 1024)
+        guard head.count >= 8 else { return [] }
+        var offset = 0
+        while offset + 8 <= head.count {
+            guard let atom = atomInfo(head, offset, fileLength: length) else { break }
+            if atom.type == "moov" {
+                let box = offset + atom.size <= head.count
+                    ? head.subdata(in: offset..<(offset + atom.size))
+                    : try await fetch(offset, atom.size)
+                return moovOffsets(box, fileOffset: offset, header: atom.header)
+            }
+            if atom.type == "mdat" {
+                let moovAt = offset + atom.size
+                let marker = try await fetch(moovAt, 16)
+                guard let next = atomInfo(marker, 0, fileLength: nil), next.type == "moov" else { return [] }
+                let box = try await fetch(moovAt, next.size)
+                return moovOffsets(box, fileOffset: moovAt, header: next.header)
+            }
+            if offset + atom.size > head.count { break }
+            offset += atom.size
+        }
+        return []
+    }
+
+    private struct Atom {
+        var size: Int
+        var header: Int
+        var type: String
+    }
+
+    private static func moovOffsets(_ box: Data, fileOffset: Int, header: Int) -> [Int] {
+        guard box.count > header else { return [] }
+        let end = min(box.count, box.count)
+        return offsets(in: box.subdata(in: header..<end), fileOffset: fileOffset + header)
+    }
+
+    private static func atomInfo(_ data: Data, _ offset: Int, fileLength: Int?) -> Atom? {
+        guard offset + 8 <= data.count else { return nil }
+        let bytes = [UInt8](data)
+        let size32 = (Int(bytes[offset]) << 24) | (Int(bytes[offset + 1]) << 16)
+            | (Int(bytes[offset + 2]) << 8) | Int(bytes[offset + 3])
+        let type = String(bytes: bytes[(offset + 4)..<(offset + 8)], encoding: .ascii) ?? ""
+        var header = 8
+        var size = size32
+        if size32 == 1, offset + 16 <= data.count {
+            header = 16
+            var wide = 0
+            for shift in 0..<8 { wide = (wide << 8) | Int(bytes[offset + 8 + shift]) }
+            size = wide
+        } else if size32 == 0, let fileLength, fileLength > offset {
+            size = fileLength - offset
+        }
+        guard size >= header else { return nil }
+        return Atom(size: size, header: header, type: type)
+    }
+}

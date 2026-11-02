@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import UniformTypeIdentifiers
 import DSMKit
 
 /// Full-screen player for Video Station items. On top of the system player it adds what Video
@@ -337,13 +338,17 @@ struct VideoStationPlayerView: View {
     }
 }
 
-/// Feeds an original file to AVPlayer through the pinned URLSession, so a trusted self-signed certificate works.
+/// Feeds media to AVPlayer through an app URLSession.
+/// A pinned certificate, nginx basic auth, and Emby/Jellyfin tokens cannot be handed to AVPlayer itself.
+/// `contentType` must be a UTI: a MIME type such as `video/mp4` makes iOS play the audio and drop the picture.
 final class PinnedMediaLoader: NSObject, AVAssetResourceLoaderDelegate, @unchecked Sendable {
-    let client: DSMClient
     let source: URL
     let queue = DispatchQueue(label: "nashelper.media")
     private let mime: String
+    private let fetch: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
     private var length: Int64?
+    private var hev1: [Int] = []
+    private var didScan = false
 
     var assetURL: URL {
         var parts = URLComponents(url: source, resolvingAgainstBaseURL: false)!
@@ -352,9 +357,15 @@ final class PinnedMediaLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
     }
 
     init(client: DSMClient, source: URL, mime: String) {
-        self.client = client
         self.source = source
         self.mime = mime
+        self.fetch = { try await client.fetchResponse($0) }
+    }
+
+    init(fetch: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse), source: URL, mime: String) {
+        self.source = source
+        self.mime = mime
+        self.fetch = fetch
     }
 
     func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
@@ -371,32 +382,87 @@ final class PinnedMediaLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
     }
 
     private func respond(to loadingRequest: AVAssetResourceLoadingRequest) async throws {
+        let remote = originalURL(from: loadingRequest.request.url) ?? source
         if length == nil {
-            var probe = URLRequest(url: source)
+            var probe = URLRequest(url: remote)
             probe.setValue("bytes=0-1", forHTTPHeaderField: "Range")
-            let (data, response) = try await client.fetchResponse(probe)
-            length = Self.totalLength(response) ?? Int64(data.count)
+            let (data, response) = try await fetch(probe)
+            length = Self.totalLength(response) ?? (response.statusCode == 200 ? Int64(data.count) : nil)
         }
+        let playlist = remote.path.lowercased().contains(".m3u8") || mime.contains("mpegurl")
         if let info = loadingRequest.contentInformationRequest {
-            info.contentType = mime
-            info.contentLength = length ?? 0
-            info.isByteRangeAccessSupported = true
+            info.contentType = Self.uti(url: remote, mime: mime)
+            info.contentLength = playlist ? 0 : (length ?? 0)
+            info.isByteRangeAccessSupported = !playlist
         }
         guard let dataRequest = loadingRequest.dataRequest else { return }
-        let start = dataRequest.requestedOffset
-        var end = start + Int64(dataRequest.requestedLength) - 1
+        if playlist {
+            var request = URLRequest(url: remote)
+            let (data, response) = try await fetch(request)
+            guard (200..<300).contains(response.statusCode) else { throw DSMError.transport("HTTP \(response.statusCode)") }
+            let text = String(data: data, encoding: .utf8) ?? ""
+            let rewritten = text.hasPrefix("#EXTM3U") ? rewriteMediaPlaylist(text, upstream: remote, scheme: "nasmedia") : text
+            if let info = loadingRequest.contentInformationRequest {
+                info.contentType = "public.m3u-playlist"
+                info.contentLength = Int64(rewritten.utf8.count)
+                info.isByteRangeAccessSupported = false
+            }
+            dataRequest.respond(with: Data(rewritten.utf8))
+            return
+        }
+        let start = dataRequest.currentOffset
+        var end = dataRequest.requestedOffset + Int64(dataRequest.requestedLength) - 1
+        if dataRequest.requestsAllDataToEndOfResource, let length { end = length - 1 }
         if let length, end >= length { end = max(start, length - 1) }
-        var request = URLRequest(url: source)
+        guard end >= start else { return }
+        var request = URLRequest(url: remote)
         request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
-        let (data, response) = try await client.fetchResponse(request)
-        if response.statusCode == 206 || response.value(forHTTPHeaderField: "Content-Range") != nil {
-            dataRequest.respond(with: data)
-        } else if Int64(data.count) > end {
+        var (data, response) = try await fetch(request)
+        guard (200..<300).contains(response.statusCode) else { throw DSMError.transport("HTTP \(response.statusCode)") }
+        if response.statusCode != 206, response.value(forHTTPHeaderField: "Content-Range") == nil, Int64(data.count) > end {
             let from = Int(start)
             let to = min(data.count, Int(end) + 1)
-            dataRequest.respond(with: from < to ? data.subdata(in: from..<to) : data)
-        } else {
-            dataRequest.respond(with: data)
+            if from < to { data = data.subdata(in: from..<to) }
+        }
+        if !didScan, Self.uti(url: remote, mime: mime) == "public.mpeg-4" {
+            didScan = true
+            hev1 = (try? await MP4Hev1.locate(length: length.map(Int.init)) { start, count in
+                try await self.slice(start: start, count: count)
+            }) ?? []
+        }
+        if !hev1.isEmpty { MP4Hev1.apply(&data, rangeStart: Int(start), offsets: hev1) }
+        dataRequest.respond(with: data)
+    }
+
+    private func slice(start: Int, count: Int) async throws -> Data {
+        var request = URLRequest(url: source)
+        let end = start + max(count, 1) - 1
+        request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
+        let (data, response) = try await fetch(request)
+        if response.statusCode == 206 || response.value(forHTTPHeaderField: "Content-Range") != nil { return data }
+        let from = min(start, data.count)
+        let to = min(data.count, start + count)
+        return from < to ? data.subdata(in: from..<to) : data
+    }
+
+    private func originalURL(from custom: URL?) -> URL? {
+        guard let custom, var parts = URLComponents(url: custom, resolvingAgainstBaseURL: false) else { return nil }
+        parts.scheme = source.scheme
+        return parts.url
+    }
+
+    /// AVAssetResourceLoadingContentInformationRequest.contentType is a UTI, not a MIME type.
+    static func uti(url: URL, mime: String) -> String {
+        let ext = url.pathExtension.lowercased()
+        if ext == "m3u8" || mime.contains("mpegurl") { return "public.m3u-playlist" }
+        if ext == "ts" { return "public.mpeg-2-transport-stream" }
+        if let type = UTType(filenameExtension: ext), !ext.isEmpty { return type.identifier }
+        if let type = UTType(mimeType: mime) { return type.identifier }
+        switch mime {
+        case "video/mp4", "video/x-m4v", "audio/mp4": return "public.mpeg-4"
+        case "video/quicktime": return "com.apple.quicktime-movie"
+        case "audio/mpeg": return "public.mp3"
+        default: return "public.mpeg-4"
         }
     }
 
@@ -405,6 +471,7 @@ final class PinnedMediaLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
            let total = range.split(separator: "/").last, let value = Int64(total), value > 0 {
             return value
         }
-        return nil
+        let given = response.expectedContentLength
+        return given > 0 ? given : nil
     }
 }

@@ -296,7 +296,7 @@ private struct MediaDetailView: View {
             detail = try? await client.detail(id: item.id)
         }
         .fullScreenCover(item: Binding(get: { playing.map(PlayURL.init) }, set: { playing = $0?.url })) { page in
-            StreamPlayerView(url: page.url)
+            StreamPlayerView(url: page.url) { try await client.fetchMedia($0) }
         }
     }
 
@@ -350,8 +350,10 @@ struct PlayURL: Identifiable {
 struct StreamPlayerView: View {
     let url: URL
     var headers: [String: String] = [:]
+    var fetch: (@Sendable (URLRequest) async throws -> (Data, HTTPURLResponse))? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
+    @State private var mediaLoader: PinnedMediaLoader?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -370,10 +372,18 @@ struct StreamPlayerView: View {
         }
         .onAppear {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-            let asset = headers.isEmpty
-                ? AVURLAsset(url: url)
-                // Needed for servers that authenticate media requests by header (Immich).
-                : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            let asset: AVURLAsset
+            if let fetch {
+                let loader = PinnedMediaLoader(fetch: fetch, source: url, mime: url.pathExtension.lowercased() == "m3u8" ? "application/vnd.apple.mpegurl" : "video/mp4")
+                mediaLoader = loader
+                asset = AVURLAsset(url: loader.assetURL)
+                asset.resourceLoader.setDelegate(loader, queue: loader.queue)
+            } else {
+                asset = headers.isEmpty
+                    ? AVURLAsset(url: url)
+                    // Needed for servers that authenticate media requests by header (Immich).
+                    : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+            }
             let p = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             player = p
             p.play()

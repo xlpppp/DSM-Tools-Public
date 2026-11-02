@@ -342,7 +342,7 @@ private struct MediaFileView: View {
     private func streamingAsset(client: DSMClient, url: URL) -> AVURLAsset {
         var options: [String: Any] = [:]
         if let mime = Self.mimeTypes[file.fileExtension] { options[AVURLAssetOverrideMIMETypeKey] = mime }
-        guard session.streamsMediaInApp else { return AVURLAsset(url: url, options: options) }
+        guard session.streamsMediaInApp || file.kind == .video else { return AVURLAsset(url: url, options: options) }
         let mime = Self.mimeTypes[file.fileExtension] ?? "application/octet-stream"
         let loader = PinnedMediaLoader(client: client, source: url, mime: mime)
         mediaLoader = loader

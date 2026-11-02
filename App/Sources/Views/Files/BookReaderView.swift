@@ -22,28 +22,35 @@ struct BookReaderView: View {
     @AppStorage("book.spacing") private var spacing = 1.65
     @AppStorage("book.theme") private var theme = "paper"
     @AppStorage("book.margin") private var margin = 22.0
+    @AppStorage("book.columns") private var columns = 1
+    @AppStorage("book.tracking") private var tracking = 0.0
+    @AppStorage("book.paragraph") private var paragraph = 0.8
     @State private var html: String?
     @State private var error: String?
     @State private var page = BookWebPage()
+    @State private var pageLabel = ""
 
     var body: some View {
         Group {
             if let html {
                 BookWebView(html: html, page: page)
-                    .ignoresSafeArea(edges: .bottom)
             } else if let error {
                 ContentUnavailableView("无法打开", systemImage: "book.closed", description: Text(error))
             } else {
                 ProgressView("正在打开…")
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(BookTheme.color(theme).ignoresSafeArea())
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Picker("风格", selection: $theme) {
+                    Picker("背景", selection: $theme) {
                         Text("纸张").tag("paper")
-                        Text("护眼").tag("sepia")
+                        Text("米黄").tag("sepia")
+                        Text("浅绿").tag("green")
+                        Text("淡蓝").tag("blue")
+                        Text("灰色").tag("gray")
                         Text("夜间").tag("night")
                     }
                     Picker("字体", selection: $font) {
@@ -51,19 +58,39 @@ struct BookReaderView: View {
                         Text("黑体").tag("sans")
                         Text("等宽").tag("mono")
                     }
-                    Stepper("字号 \(Int(size))", value: $size, in: 14...32, step: 1)
-                    Stepper("行距 \(spacing, specifier: "%.1f")", value: $spacing, in: 1.2...2.4, step: 0.1)
-                    Stepper("边距 \(Int(margin))", value: $margin, in: 12...48, step: 2)
+                    Picker("分栏", selection: $columns) {
+                        Text("一栏").tag(1)
+                        Text("两栏").tag(2)
+                    }
+                    Stepper("字号 \(Int(size))", value: $size, in: 14...36, step: 1)
+                    Stepper("行距 \(spacing, specifier: "%.1f")", value: $spacing, in: 1.1...2.6, step: 0.1)
+                    Stepper("段距 \(paragraph, specifier: "%.1f")", value: $paragraph, in: 0...2, step: 0.1)
+                    Stepper("字距 \(tracking, specifier: "%.1f")", value: $tracking, in: 0...3, step: 0.2)
+                    Stepper("边距 \(Int(margin))", value: $margin, in: 8...48, step: 2)
                 } label: {
                     Image(systemName: "textformat.size")
                 }
             }
         }
-        .onChange(of: styleKey) { _, _ in page.apply(style) }
+        .safeAreaInset(edge: .bottom) {
+            if html != nil {
+                HStack {
+                    Button { page.turn(-1) { pageLabel = $0 } } label: { Image(systemName: "chevron.left") }
+                    Spacer()
+                    Text(pageLabel.isEmpty ? "第 1 页" : pageLabel).font(.footnote.monospacedDigit())
+                    Spacer()
+                    Button { page.turn(1) { pageLabel = $0 } } label: { Image(systemName: "chevron.right") }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(.ultraThinMaterial)
+            }
+        }
+        .onChange(of: styleKey) { _, _ in page.apply(style) { pageLabel = $0 } }
         .task { await load() }
     }
 
-    private var styleKey: String { "\(font)-\(size)-\(spacing)-\(theme)-\(margin)" }
+    private var styleKey: String { "\(font)-\(size)-\(spacing)-\(theme)-\(margin)-\(columns)-\(tracking)-\(paragraph)" }
 
     private var style: String {
         let face: String
@@ -73,12 +100,21 @@ struct BookReaderView: View {
         default: face = "Iowan Old Style, Palatino, serif"
         }
         let colors = BookTheme.css(theme)
+        let column = columns >= 2
+            ? "calc((100vw - \(Int(margin) * 2)px - 24px) / 2)"
+            : "calc(100vw - \(Int(margin) * 2)px)"
         return """
-        body { margin: 0; background: \(colors.bg); color: \(colors.fg); }
-        #page { font-family: \(face); font-size: \(Int(size))px; line-height: \(spacing);
-                 padding: \(Int(margin))px; }
+        html, body { height: 100%; margin: 0; background: \(colors.bg); color: \(colors.fg); }
+        #scroller { height: 100%; overflow-x: auto; overflow-y: hidden; }
+        #page { height: 100%; box-sizing: border-box; column-fill: auto; column-gap: 24px;
+                column-width: \(column); padding: 12px \(Int(margin))px;
+                font-family: \(face); font-size: \(Int(size))px; line-height: \(spacing);
+                letter-spacing: \(tracking)px; }
+        #page { white-space: normal; }
+        pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+              margin: 0; font-family: inherit; font-size: inherit; line-height: inherit; }
         img { max-width: 100%; height: auto; }
-        p { margin: 0.8em 0; }
+        p { margin: 0 0 \(paragraph)em; }
         """
     }
 
@@ -99,6 +135,9 @@ private enum BookTheme {
         switch name {
         case "night": return Color(hex: 0x121212)
         case "sepia": return Color(hex: 0xF4ECD8)
+        case "green": return Color(hex: 0xE7F3E1)
+        case "blue": return Color(hex: 0xE8F1F8)
+        case "gray": return Color(hex: 0xF2F2F2)
         default: return Color(hex: 0xFFFEF8)
         }
     }
@@ -107,6 +146,9 @@ private enum BookTheme {
         switch name {
         case "night": return ("#121212", "#E8E8E8")
         case "sepia": return ("#F4ECD8", "#3B2F23")
+        case "green": return ("#E7F3E1", "#1C2B18")
+        case "blue": return ("#E8F1F8", "#1A2836")
+        case "gray": return ("#F2F2F2", "#222222")
         default: return ("#FFFEF8", "#1C1917")
         }
     }
@@ -125,7 +167,20 @@ enum BookDocument {
         """
         <!doctype html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">
-        <style id="reader">\(css)</style></head><body><div id="page">\(body)</div></body></html>
+        <style id="reader">\(css)</style>
+        <script>
+        function nasTurn(delta) {
+          var box = document.getElementById('scroller');
+          var w = box.clientWidth || window.innerWidth || 1;
+          var max = Math.max(0, box.scrollWidth - w);
+          var x = Math.max(0, Math.min(max, box.scrollLeft + delta * w));
+          box.scrollTo({left: x, behavior: 'smooth'});
+          var pages = Math.max(1, Math.round(box.scrollWidth / w));
+          var index = Math.min(pages, Math.round(x / w) + 1);
+          return index + '/' + pages;
+        }
+        </script>
+        </head><body><div id="scroller"><div id="page">\(body)</div></div></body></html>
         """
     }
 
@@ -284,8 +339,18 @@ private struct BookWebView: UIViewRepresentable {
 final class BookWebPage {
     weak var view: WKWebView?
 
-    func apply(_ css: String) {
+    func apply(_ css: String, done: @escaping (String) -> Void = { _ in }) {
         let quoted = css.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "`", with: "\\`")
-        view?.evaluateJavaScript("document.getElementById('reader').textContent = `\(quoted)`")
+        view?.evaluateJavaScript("document.getElementById('reader').textContent = `\(quoted)`; nasTurn(0)") { result, _ in
+            let text = result as? String ?? ""
+            DispatchQueue.main.async { done(text.isEmpty ? "" : "第 \(text.replacingOccurrences(of: "/", with: " / ")) 页") }
+        }
+    }
+
+    func turn(_ delta: Int, done: @escaping (String) -> Void) {
+        view?.evaluateJavaScript("nasTurn(\(delta))") { result, _ in
+            let text = result as? String ?? ""
+            DispatchQueue.main.async { done(text.isEmpty ? "" : "第 \(text.replacingOccurrences(of: "/", with: " / ")) 页") }
+        }
     }
 }
