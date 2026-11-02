@@ -50,7 +50,7 @@ private extension String {
 public enum MP4Hev1 {
     public static func offsets(in moovPayload: Data, fileOffset: Int) -> [Int] {
         let bytes = [UInt8](moovPayload)
-        guard bytes.count > 8 else { return [] }
+        guard bytes.count >= 8 else { return [] }
         var found: [Int] = []
         var index = 4
         while index + 4 <= bytes.count {
