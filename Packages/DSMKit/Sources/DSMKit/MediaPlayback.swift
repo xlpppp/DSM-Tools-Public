@@ -115,7 +115,7 @@ public enum MP4Hev1 {
         let bytes = [UInt8](data)
         let size32 = (Int(bytes[offset]) << 24) | (Int(bytes[offset + 1]) << 16)
             | (Int(bytes[offset + 2]) << 8) | Int(bytes[offset + 3])
-        let type = String(bytes: bytes[(offset + 4)..<(offset + 8)], encoding: .ascii) ?? ""
+        let type = String(bytes[(offset + 4)..<(offset + 8)].map { Character(UnicodeScalar($0)) })
         var header = 8
         var size = size32
         if size32 == 1, offset + 16 <= data.count {
