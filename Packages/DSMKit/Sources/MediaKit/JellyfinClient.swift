@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import DSMKit
 
 /// Jellyfin and Emby share the same REST API (Jellyfin forked from Emby).
