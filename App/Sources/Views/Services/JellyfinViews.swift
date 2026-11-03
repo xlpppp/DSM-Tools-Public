@@ -68,20 +68,29 @@ struct JellyfinItemsView: View {
         self.title = title
         self.isMusic = isMusic
         let episodes = title.contains("季")
-        _sort = State(initialValue: episodes ? .episode : .name)
-        _ascending = State(initialValue: episodes ? true : MediaSort.name.ascendingByDefault)
+        _sort = State(initialValue: episodes ? .episode : (isMusic ? .name : .added))
+        _ascending = State(initialValue: episodes || isMusic ? true : false)
     }
 
     private var posterRatio: CGFloat { isMusic ? 1 : 2.0 / 3.0 }
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: isMusic ? 150 : 110), spacing: 14)], spacing: 18) {
-                ForEach(items) { item in
-                    EntryLink(client: client, account: account, item: item, siblings: items, grid: true, posterRatio: posterRatio)
+            if !items.isEmpty, items.allSatisfy({ $0.type == "Episode" }) {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    ForEach(items) { item in
+                        EntryLink(client: client, account: account, item: item, siblings: items, episodeRow: true)
+                    }
                 }
+                .padding(16)
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: isMusic ? 150 : 110), spacing: 14)], spacing: 18) {
+                    ForEach(items) { item in
+                        EntryLink(client: client, account: account, item: item, siblings: items, grid: true, posterRatio: posterRatio)
+                    }
+                }
+                .padding(16)
             }
-            .padding(16)
         }
         .overlay { if !loaded { ProgressView() } }
         .background(Theme.background)
@@ -140,6 +149,7 @@ private struct EntryLink: View {
     let item: MediaEntry
     let siblings: [MediaEntry]
     var grid = false
+    var episodeRow = false
     var posterRatio: CGFloat = 2.0 / 3.0
     @Environment(MusicPlayer.self) private var player
 
@@ -163,7 +173,28 @@ private struct EntryLink: View {
 
     @ViewBuilder
     private var label: some View {
-        if grid {
+        if episodeRow {
+            HStack(alignment: .top, spacing: 12) {
+                RemoteImage(url: item.hasPrimaryImage ? client.imageURL(for: item, maxHeight: 200) : nil, fetcher: { try await client.fetch($0) }) {
+                    ZStack {
+                        account.kind.color.opacity(0.25)
+                        Image(systemName: "film").foregroundStyle(account.kind.color)
+                    }
+                }
+                .frame(width: 144, height: 81)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(displayName).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    if let overview = item.overview?.trimmingCharacters(in: .whitespacesAndNewlines), !overview.isEmpty {
+                        Text(overview).font(.caption).foregroundStyle(Theme.secondaryText).lineLimit(3)
+                    }
+                    if let runtime = item.runtime, runtime > 0 {
+                        Text("\(max(1, Int(runtime / 60))) 分钟").font(.caption2).foregroundStyle(Theme.secondaryText)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        } else if grid {
             VStack(alignment: .leading, spacing: 6) {
                 Color.clear
                     .aspectRatio(item.type == "Episode" ? 16.0 / 9.0 : posterRatio, contentMode: .fit)
@@ -195,7 +226,7 @@ private struct EntryLink: View {
         if item.type == "Episode" {
             let order = item.episodeOrder
             if order.episode != Int.max {
-                return "S\(order.season)E\(order.episode) \(item.name)"
+                return "第 \(order.episode) 集  \(item.name)"
             }
         }
         return item.name
@@ -256,7 +287,7 @@ private struct MediaDetailView: View {
                 }
                 if let overview = shown.overview, !overview.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("简介").font(.headline)
+                        Text(item.type == "Episode" ? "剧情介绍" : "简介").font(.headline)
                         Text(overview).font(.subheadline)
                     }
                 }
@@ -296,7 +327,7 @@ private struct MediaDetailView: View {
             detail = try? await client.detail(id: item.id)
         }
         .fullScreenCover(item: Binding(get: { playing.map(PlayURL.init) }, set: { playing = $0?.url })) { page in
-            StreamPlayerView(url: page.url) { try await client.fetchMedia($0) }
+            StreamPlayerView(url: page.url) { try await client.fetchMediaFile($0) }
         }
     }
 
@@ -350,7 +381,7 @@ struct PlayURL: Identifiable {
 struct StreamPlayerView: View {
     let url: URL
     var headers: [String: String] = [:]
-    var fetch: (@Sendable (URLRequest) async throws -> (Data, HTTPURLResponse))? = nil
+    var pull: (@Sendable (URLRequest) async throws -> (URL, HTTPURLResponse))? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
     @State private var mediaLoader: PinnedMediaLoader?
@@ -370,14 +401,25 @@ struct StreamPlayerView: View {
             }
             .padding()
         }
-        .onAppear {
+        .task {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
             let asset: AVURLAsset
-            if let fetch {
-                let loader = PinnedMediaLoader(fetch: fetch, source: url, mime: url.pathExtension.lowercased() == "m3u8" ? "application/vnd.apple.mpegurl" : "video/mp4")
-                mediaLoader = loader
-                asset = AVURLAsset(url: loader.assetURL)
-                asset.resourceLoader.setDelegate(loader, queue: loader.queue)
+            if let pull {
+                let ext = url.pathExtension.lowercased()
+                let mime = ext == "m3u8" ? "application/vnd.apple.mpegurl" : (ext == "mkv" ? "video/x-matroska" : "video/mp4")
+                if let opened = try? await PinnedMediaLoader.prepare(pull: pull, source: url, mime: mime) {
+                    if let file = opened.file {
+                        asset = AVURLAsset(url: file)
+                    } else if let loader = opened.loader {
+                        mediaLoader = loader
+                        asset = AVURLAsset(url: loader.assetURL)
+                        asset.resourceLoader.setDelegate(loader, queue: loader.queue)
+                    } else {
+                        asset = AVURLAsset(url: url)
+                    }
+                } else {
+                    asset = AVURLAsset(url: url)
+                }
             } else {
                 asset = headers.isEmpty
                     ? AVURLAsset(url: url)

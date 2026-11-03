@@ -264,19 +264,20 @@ public final class JellyfinClient: @unchecked Sendable {
                            officialRating: extra.OfficialRating, communityRating: extra.CommunityRating)
     }
 
-    /// Asks Emby or Jellyfin which URL to play. Native mp4/mov stay direct; anything else uses the server's HLS URL.
+    /// The server's own direct stream. Transcoding is not requested: the original file is what plays.
     public func playbackURL(for item: MediaEntry) async throws -> URL {
         guard userID != nil else { throw ServiceError.unauthorized }
         let data = try await http.data("POST", http.url("Items/\(item.id)/PlaybackInfo", query: [
-            "UserId": userID ?? "", "MaxStreamingBitrate": "120000000", "AutoOpenLiveStream": "true",
+            "UserId": userID ?? "", "MaxStreamingBitrate": "120000000",
         ]), headers: headers, json: Self.playbackBody(userID: userID ?? ""))
         let info = try JSONDecoder().decode(PlaybackInfo.self, from: data)
         guard let source = info.MediaSources.first else { throw ServiceError.invalidResponse }
-        let container = source.Container?.lowercased() ?? ""
-        let native = ["mp4", "m4v", "mov"].contains(container)
-        if native, let direct = source.DirectStreamUrl, let url = resolve(direct) { return withAPIKey(url) }
-        if let transcode = source.TranscodingUrl, let url = resolve(transcode) { return withAPIKey(url) }
-        return videoURL(for: item, mediaSourceID: source.Id ?? item.id, playSessionID: info.PlaySessionId)
+        if let direct = source.DirectStreamUrl, !direct.isEmpty, let url = resolve(direct) { return withAPIKey(url) }
+        let rawExt = source.Container?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let ext = rawExt.isEmpty ? "mp4" : rawExt
+        var query = ["Static": "true", "MediaSourceId": source.Id ?? item.id, "api_key": token ?? ""]
+        if let playSessionID = info.PlaySessionId, !playSessionID.isEmpty { query["PlaySessionId"] = playSessionID }
+        return http.url("Videos/\(item.id)/stream.\(ext)", query: query)
     }
 
     public func imageURL(for item: MediaEntry, maxHeight: Int = 600) -> URL {
@@ -317,24 +318,15 @@ public final class JellyfinClient: @unchecked Sendable {
             "UserId": userID,
             "MaxStreamingBitrate": 120_000_000,
             "StartTimeTicks": 0,
-            "AutoOpenLiveStream": true,
+            "EnableTranscoding": false,
             "DeviceProfile": [
                 "MaxStreamingBitrate": 120_000_000,
                 "MaxStaticBitrate": 120_000_000,
                 "DirectPlayProfiles": [[
-                    "Container": "mp4,m4v,mov",
+                    "Container": "mp4,m4v,mov,mkv,ts,m2ts,avi",
                     "Type": "Video",
-                    "VideoCodec": "h264",
-                    "AudioCodec": "aac,mp3,ac3,eac3",
-                ]],
-                "TranscodingProfiles": [[
-                    "Container": "ts",
-                    "Type": "Video",
-                    "VideoCodec": "h264",
-                    "AudioCodec": "aac",
-                    "Protocol": "hls",
-                    "Context": "Streaming",
-                    "MaxAudioChannels": "2",
+                    "VideoCodec": "h264,hevc,mpeg4,vp9",
+                    "AudioCodec": "aac,mp3,ac3,eac3,flac,opus,dts",
                 ]],
                 "SubtitleProfiles": [
                     ["Format": "vtt", "Method": "External"],
@@ -358,12 +350,13 @@ public final class JellyfinClient: @unchecked Sendable {
     }
 
     /// Media bytes, including the Emby/Jellyfin token. AVPlayer cannot add that header or trust a pinned certificate.
-    public func fetchMedia(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    /// The body is a file, so a movie is not held in memory.
+    public func fetchMediaFile(_ request: URLRequest) async throws -> (URL, HTTPURLResponse) {
         var copy = request
         for (key, value) in headers where copy.value(forHTTPHeaderField: key) == nil {
             copy.setValue(value, forHTTPHeaderField: key)
         }
-        return try await http.transport.send(copy)
+        return try await http.transport.download(copy)
     }
 
     private func withAPIKey(_ url: URL) -> URL {

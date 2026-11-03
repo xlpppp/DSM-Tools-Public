@@ -122,13 +122,24 @@ final class MusicPlayer {
                 }
                 guard !Task.isCancelled else { return }
                 let item: AVPlayerItem
-                if let mediaFetch, !url.isFileURL {
-                    let loader = PinnedMediaLoader(fetch: mediaFetch, source: url, mime: Self.mime(url))
-                    let asset = AVURLAsset(url: loader.assetURL)
-                    asset.resourceLoader.setDelegate(loader, queue: loader.queue)
-                    item = AVPlayerItem(asset: asset)
-                    player.replaceCurrentItem(with: item)
-                    mediaLoader = loader
+                if let mediaPull, !url.isFileURL {
+                    let opened = try await PinnedMediaLoader.prepare(pull: mediaPull, source: url, mime: Self.mime(url))
+                    if let file = opened.file {
+                        localFile = file
+                        item = AVPlayerItem(url: file)
+                        player.replaceCurrentItem(with: item)
+                        mediaLoader = nil
+                    } else if let loader = opened.loader {
+                        let asset = AVURLAsset(url: loader.assetURL)
+                        asset.resourceLoader.setDelegate(loader, queue: loader.queue)
+                        item = AVPlayerItem(asset: asset)
+                        player.replaceCurrentItem(with: item)
+                        mediaLoader = loader
+                    } else {
+                        item = AVPlayerItem(url: url)
+                        player.replaceCurrentItem(with: item)
+                        mediaLoader = nil
+                    }
                 } else {
                     item = AVPlayerItem(url: url)
                     player.replaceCurrentItem(with: item)
@@ -152,7 +163,7 @@ final class MusicPlayer {
     }
 
     /// Set when AVPlayer cannot open the URL itself (pinned certificate or nginx basic auth).
-    @ObservationIgnored var mediaFetch: (@Sendable (URLRequest) async throws -> (Data, HTTPURLResponse))?
+    @ObservationIgnored var mediaPull: (@Sendable (URLRequest) async throws -> (URL, HTTPURLResponse))?
     /// Set by the app for servers whose certificate is pinned; those URLs are fetched first.
     @ObservationIgnored var downloader: (@Sendable (URL, String) async throws -> URL)?
     @ObservationIgnored var pinnedHosts: Set<String> = []
@@ -161,7 +172,7 @@ final class MusicPlayer {
     private func requiresDownload(_ url: URL) -> Bool {
         // Host strings differ between the saved endpoint and the stream URL (IP, QuickConnect, port).
         // A downloader is installed only when the DSM certificate is pinned.
-        !url.isFileURL && mediaFetch == nil && downloader != nil
+        !url.isFileURL && mediaPull == nil && downloader != nil
     }
 
     private static func mime(_ url: URL) -> String {

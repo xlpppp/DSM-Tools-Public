@@ -1,5 +1,7 @@
 import SwiftUI
 import WebKit
+import AVFoundation
+import MediaPlayer
 import ZIPFoundation
 import DSMKit
 
@@ -25,6 +27,10 @@ struct BookReaderView: View {
     @AppStorage("book.columns") private var columns = 1
     @AppStorage("book.tracking") private var tracking = 0.0
     @AppStorage("book.paragraph") private var paragraph = 0.8
+    @AppStorage("book.align") private var align = "left"
+    @AppStorage("book.indent") private var indent = 0.0
+    @AppStorage("book.brightness") private var brightness = 1.0
+    @AppStorage("book.volumeKeys") private var volumeKeys = true
     @State private var html: String?
     @State private var error: String?
     @State private var page = BookWebPage()
@@ -34,6 +40,15 @@ struct BookReaderView: View {
         Group {
             if let html {
                 BookWebView(html: html, page: page)
+                    .overlay {
+                        HStack(spacing: 0) {
+                            Color.clear.contentShape(Rectangle())
+                                .onTapGesture { page.turn(-1) { pageLabel = $0 } }
+                            Color.clear.contentShape(Rectangle())
+                                .onTapGesture { page.turn(1) { pageLabel = $0 } }
+                        }
+                    }
+                    .overlay { Color.black.opacity(1 - brightness).allowsHitTesting(false) }
             } else if let error {
                 ContentUnavailableView("无法打开", systemImage: "book.closed", description: Text(error))
             } else {
@@ -62,11 +77,18 @@ struct BookReaderView: View {
                         Text("一栏").tag(1)
                         Text("两栏").tag(2)
                     }
+                    Picker("对齐", selection: $align) {
+                        Text("左对齐").tag("left")
+                        Text("两端对齐").tag("justify")
+                    }
                     Stepper("字号 \(Int(size))", value: $size, in: 14...36, step: 1)
                     Stepper("行距 \(spacing, specifier: "%.1f")", value: $spacing, in: 1.1...2.6, step: 0.1)
                     Stepper("段距 \(paragraph, specifier: "%.1f")", value: $paragraph, in: 0...2, step: 0.1)
                     Stepper("字距 \(tracking, specifier: "%.1f")", value: $tracking, in: 0...3, step: 0.2)
+                    Stepper("首行缩进 \(indent, specifier: "%.0f")", value: $indent, in: 0...2, step: 1)
                     Stepper("边距 \(Int(margin))", value: $margin, in: 8...48, step: 2)
+                    Stepper("亮度 \(Int(brightness * 100))%", value: $brightness, in: 0.4...1, step: 0.05)
+                    Toggle("音量键翻页", isOn: $volumeKeys)
                 } label: {
                     Image(systemName: "textformat.size")
                 }
@@ -86,11 +108,18 @@ struct BookReaderView: View {
                 .background(.ultraThinMaterial)
             }
         }
-        .onChange(of: styleKey) { _, _ in page.apply(style) { pageLabel = $0 } }
+        .background {
+            VolumePageKeys(enabled: volumeKeys && html != nil) { delta in
+                page.turn(delta) { pageLabel = $0 }
+            }
+        }
+        .onChange(of: styleKey) { _, _ in page.apply(style, columns: columns, gap: Int(margin) * 2) { pageLabel = $0 } }
         .task { await load() }
     }
 
-    private var styleKey: String { "\(font)-\(size)-\(spacing)-\(theme)-\(margin)-\(columns)-\(tracking)-\(paragraph)" }
+    private var styleKey: String {
+        "\(font)-\(size)-\(spacing)-\(theme)-\(margin)-\(columns)-\(tracking)-\(paragraph)-\(align)-\(indent)-\(brightness)"
+    }
 
     private var style: String {
         let face: String
@@ -100,21 +129,17 @@ struct BookReaderView: View {
         default: face = "Iowan Old Style, Palatino, serif"
         }
         let colors = BookTheme.css(theme)
-        let column = columns >= 2
-            ? "calc((100vw - \(Int(margin) * 2)px - 24px) / 2)"
-            : "calc(100vw - \(Int(margin) * 2)px)"
         return """
-        html, body { height: 100%; margin: 0; background: \(colors.bg); color: \(colors.fg); }
-        #scroller { height: 100%; overflow-x: auto; overflow-y: hidden; }
-        #page { height: 100%; box-sizing: border-box; column-fill: auto; column-gap: 24px;
-                column-width: \(column); padding: 12px \(Int(margin))px;
+        html, body { height: 100%; margin: 0; overflow: hidden; background: \(colors.bg); color: \(colors.fg); }
+        #scroller { height: 100%; overflow: hidden; }
+        #page { height: 100%; box-sizing: border-box; column-fill: auto; margin: 0;
                 font-family: \(face); font-size: \(Int(size))px; line-height: \(spacing);
-                letter-spacing: \(tracking)px; }
-        #page { white-space: normal; }
+                letter-spacing: \(tracking)px; text-align: \(align == "justify" ? "justify" : "left");
+                white-space: normal; }
         pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
-              margin: 0; font-family: inherit; font-size: inherit; line-height: inherit; }
+              margin: 0; font-family: inherit; font-size: inherit; line-height: inherit; text-indent: 0; }
         img { max-width: 100%; height: auto; }
-        p { margin: 0 0 \(paragraph)em; }
+        p { margin: 0 0 \(paragraph)em; text-indent: \(indent)em; }
         """
     }
 
@@ -169,18 +194,36 @@ enum BookDocument {
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <style id="reader">\(css)</style>
         <script>
-        function nasTurn(delta) {
+        window.nasColumns = 1;
+        window.nasGap = 40;
+        function nasLayout() {
           var box = document.getElementById('scroller');
+          var page = document.getElementById('page');
+          if (!box || !page) return;
+          var cols = window.nasColumns > 1 ? 2 : 1;
+          var gap = window.nasGap > 8 ? window.nasGap : 32;
           var w = box.clientWidth || window.innerWidth || 1;
+          var col = Math.max(40, Math.floor(w / cols - gap));
+          page.style.columnWidth = col + 'px';
+          page.style.columnGap = gap + 'px';
+          page.style.height = (box.clientHeight || window.innerHeight) + 'px';
+          page.style.columnFill = 'auto';
+        }
+        function nasTurn(delta) {
+          nasLayout();
+          var box = document.getElementById('scroller');
+          var w = box.clientWidth || 1;
           var max = Math.max(0, box.scrollWidth - w);
-          var x = Math.max(0, Math.min(max, box.scrollLeft + delta * w));
-          box.scrollTo({left: x, behavior: 'smooth'});
-          var pages = Math.max(1, Math.round(box.scrollWidth / w));
+          var index0 = Math.round(box.scrollLeft / w);
+          var x = Math.max(0, Math.min(max, (index0 + delta) * w));
+          box.scrollTo({left: x, behavior: 'auto'});
+          var pages = Math.max(1, Math.ceil(box.scrollWidth / w));
           var index = Math.min(pages, Math.round(x / w) + 1);
           return index + '/' + pages;
         }
         </script>
-        </head><body><div id="scroller"><div id="page">\(body)</div></div></body></html>
+        </head><body><div id="scroller"><div id="page">\(body)</div></div>
+        <script>nasLayout();</script></body></html>
         """
     }
 
@@ -339,9 +382,10 @@ private struct BookWebView: UIViewRepresentable {
 final class BookWebPage {
     weak var view: WKWebView?
 
-    func apply(_ css: String, done: @escaping (String) -> Void = { _ in }) {
+    func apply(_ css: String, columns: Int, gap: Int, done: @escaping (String) -> Void = { _ in }) {
         let quoted = css.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "`", with: "\\`")
-        view?.evaluateJavaScript("document.getElementById('reader').textContent = `\(quoted)`; nasTurn(0)") { result, _ in
+        let script = "window.nasColumns=\(columns);window.nasGap=\(gap);document.getElementById('reader').textContent=`\(quoted)`;nasTurn(0)"
+        view?.evaluateJavaScript(script) { result, _ in
             let text = result as? String ?? ""
             DispatchQueue.main.async { done(text.isEmpty ? "" : "第 \(text.replacingOccurrences(of: "/", with: " / ")) 页") }
         }
@@ -351,6 +395,57 @@ final class BookWebPage {
         view?.evaluateJavaScript("nasTurn(\(delta))") { result, _ in
             let text = result as? String ?? ""
             DispatchQueue.main.async { done(text.isEmpty ? "" : "第 \(text.replacingOccurrences(of: "/", with: " / ")) 页") }
+        }
+    }
+}
+
+/// Volume up turns back a page, volume down turns forward. The system volume is put back.
+private struct VolumePageKeys: UIViewControllerRepresentable {
+    var enabled: Bool
+    var turn: (Int) -> Void
+
+    func makeUIViewController(context: Context) -> Controller {
+        let controller = Controller()
+        controller.turn = turn
+        return controller
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.enabled = enabled
+        controller.turn = turn
+    }
+
+    final class Controller: UIViewController {
+        var enabled = true
+        var turn: (Int) -> Void = { _ in }
+        private var base: Float = 0.5
+        private var busy = false
+        private var slider: UISlider?
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.isUserInteractionEnabled = false
+            let volume = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 1, height: 1))
+            view.addSubview(volume)
+            slider = volume.subviews.compactMap { $0 as? UISlider }.first
+            try? AVAudioSession.sharedInstance().setActive(true)
+            base = AVAudioSession.sharedInstance().outputVolume
+            AVAudioSession.sharedInstance().addObserver(self, forKeyPath: "outputVolume", options: [.new], context: nil)
+        }
+
+        deinit {
+            AVAudioSession.sharedInstance().removeObserver(self, forKeyPath: "outputVolume")
+        }
+
+        override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+            guard keyPath == "outputVolume", enabled, !busy else { return }
+            let now = AVAudioSession.sharedInstance().outputVolume
+            guard abs(now - base) > 0.001 else { return }
+            busy = true
+            let direction = now > base ? -1 : 1
+            DispatchQueue.main.async { self.turn(direction) }
+            slider?.setValue(base, animated: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.busy = false }
         }
     }
 }

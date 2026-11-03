@@ -149,7 +149,7 @@ struct MusicView: View {
     private func configurePlayer(_ client: DSMClient) {
         if session.streamsMediaInApp {
             if let host = session.endpoint?.host { player.pinnedHosts.insert(host) }
-            player.mediaFetch = { request in try await client.fetchResponse(request) }
+            player.mediaPull = { request in try await client.download(request) }
         } else if session.endpoint?.pinnedCertificateSHA256 != nil, let host = session.endpoint?.host {
             player.pinnedHosts.insert(host)
             player.downloader = { url, name in try await client.download(url, as: name) }

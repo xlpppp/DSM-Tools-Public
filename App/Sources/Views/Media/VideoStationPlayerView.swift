@@ -234,8 +234,9 @@ struct VideoStationPlayerView: View {
             let bytes = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
             if response.statusCode != 206 && bytes > 64 {
                 let named = file.deletingLastPathComponent().appendingPathComponent("original.\(self.file.fileExtension)")
-                if (try? FileManager.default.moveItem(at: file, to: named)) != nil { return AVURLAsset(url: named) }
-                return AVURLAsset(url: file)
+                let local = (try? FileManager.default.moveItem(at: file, to: named)) != nil ? named : file
+                await PinnedMediaLoader.rewriteHev1(in: local)
+                return AVURLAsset(url: local)
             }
             try? FileManager.default.removeItem(at: file)
             let mime = Self.mimeTypes[fileExtension(stream.url)] ?? "video/mp4"
@@ -345,10 +346,13 @@ final class PinnedMediaLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
     let source: URL
     let queue = DispatchQueue(label: "nashelper.media")
     private let mime: String
-    private let fetch: @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
+    /// Writes the response to a file. A movie must not be accumulated in memory.
+    private let pull: @Sendable (URLRequest) async throws -> (URL, HTTPURLResponse)
     private var length: Int64?
+    private var fullFile: URL?
+    private var patched = false
+    private var didLocate = false
     private var hev1: [Int] = []
-    private var didScan = false
 
     var assetURL: URL {
         var parts = URLComponents(url: source, resolvingAgainstBaseURL: false)!
@@ -359,13 +363,37 @@ final class PinnedMediaLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
     init(client: DSMClient, source: URL, mime: String) {
         self.source = source
         self.mime = mime
-        self.fetch = { try await client.fetchResponse($0) }
+        self.pull = { try await client.download($0) }
     }
 
-    init(fetch: @escaping @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse), source: URL, mime: String) {
+    init(pull: @escaping @Sendable (URLRequest) async throws -> (URL, HTTPURLResponse), source: URL, mime: String) {
         self.source = source
         self.mime = mime
-        self.fetch = fetch
+        self.pull = pull
+    }
+
+    /// When the server ignores Range, the probe already saved the whole file. Play that file.
+    /// A real 206 stays on the resource loader so playback can start before the file ends.
+    static func prepare(pull: @escaping @Sendable (URLRequest) async throws -> (URL, HTTPURLResponse),
+                        source: URL, mime: String) async throws -> (file: URL?, loader: PinnedMediaLoader?) {
+        if source.path.lowercased().contains(".m3u8") || mime.contains("mpegurl") {
+            return (nil, PinnedMediaLoader(pull: pull, source: source, mime: mime))
+        }
+        var probe = URLRequest(url: source)
+        probe.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        let (file, response) = try await pull(probe)
+        let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0
+        if response.statusCode == 206 || size <= 4096 {
+            try? FileManager.default.removeItem(at: file)
+            return (nil, PinnedMediaLoader(pull: pull, source: source, mime: mime))
+        }
+        let ext = source.pathExtension.isEmpty ? "mp4" : source.pathExtension
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let named = folder.appendingPathComponent("media." + ext)
+        let local = (try? FileManager.default.moveItem(at: file, to: named)) != nil ? named : file
+        await rewriteHev1(in: local)
+        return (local, nil)
     }
 
     func resourceLoader(_ resourceLoader: AVAssetResourceLoader,
@@ -383,23 +411,19 @@ final class PinnedMediaLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
 
     private func respond(to loadingRequest: AVAssetResourceLoadingRequest) async throws {
         let remote = originalURL(from: loadingRequest.request.url) ?? source
-        if length == nil {
-            var probe = URLRequest(url: remote)
-            probe.setValue("bytes=0-1", forHTTPHeaderField: "Range")
-            let (data, response) = try await fetch(probe)
-            length = Self.totalLength(response) ?? (response.statusCode == 200 ? Int64(data.count) : nil)
-        }
+        try await ensureLength(of: remote)
         let playlist = remote.path.lowercased().contains(".m3u8") || mime.contains("mpegurl")
         if let info = loadingRequest.contentInformationRequest {
             info.contentType = Self.uti(url: remote, mime: mime)
             info.contentLength = playlist ? 0 : (length ?? 0)
-            info.isByteRangeAccessSupported = !playlist
+            info.isByteRangeAccessSupported = !playlist && length != nil
         }
         guard let dataRequest = loadingRequest.dataRequest else { return }
         if playlist {
-            var request = URLRequest(url: remote)
-            let (data, response) = try await fetch(request)
+            let (file, response) = try await pull(URLRequest(url: remote))
+            defer { try? FileManager.default.removeItem(at: file) }
             guard (200..<300).contains(response.statusCode) else { throw DSMError.transport("HTTP \(response.statusCode)") }
+            let data = try Data(contentsOf: file)
             let text = String(data: data, encoding: .utf8) ?? ""
             let rewritten = text.hasPrefix("#EXTM3U") ? rewriteMediaPlaylist(text, upstream: remote, scheme: "nasmedia") : text
             if let info = loadingRequest.contentInformationRequest {
@@ -411,38 +435,103 @@ final class PinnedMediaLoader: NSObject, AVAssetResourceLoaderDelegate, @uncheck
             return
         }
         let start = dataRequest.currentOffset
-        var end = dataRequest.requestedOffset + Int64(dataRequest.requestedLength) - 1
-        if dataRequest.requestsAllDataToEndOfResource, let length { end = length - 1 }
+        let asked = dataRequest.requestedLength
+        var end = start
+        if asked > 0, asked < 32_000_000 {
+            end = dataRequest.requestedOffset + Int64(asked) - 1
+        } else if let length {
+            end = length - 1
+        } else {
+            end = start + 1_048_575
+        }
         if let length, end >= length { end = max(start, length - 1) }
         guard end >= start else { return }
-        var request = URLRequest(url: remote)
-        request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
-        var (data, response) = try await fetch(request)
-        guard (200..<300).contains(response.statusCode) else { throw DSMError.transport("HTTP \(response.statusCode)") }
-        if response.statusCode != 206, response.value(forHTTPHeaderField: "Content-Range") == nil, Int64(data.count) > end {
-            let from = Int(start)
-            let to = min(data.count, Int(end) + 1)
-            if from < to { data = data.subdata(in: from..<to) }
-        }
-        if !didScan, Self.uti(url: remote, mime: mime) == "public.mpeg-4" {
-            didScan = true
-            hev1 = (try? await MP4Hev1.locate(length: length.map(Int.init)) { start, count in
-                try await self.slice(start: start, count: count)
+        if fullFile == nil, Self.uti(url: remote, mime: mime) == "public.mpeg-4", !didLocate {
+            didLocate = true
+            hev1 = (try? await MP4Hev1.locate(length: length.map(Int.init)) { offset, count in
+                try await self.bytes(of: remote, start: Int64(offset), end: Int64(offset + max(count, 1) - 1))
             }) ?? []
         }
-        if !hev1.isEmpty { MP4Hev1.apply(&data, rangeStart: Int(start), offsets: hev1) }
-        dataRequest.respond(with: data)
+        var cursor = start
+        while cursor <= end {
+            let pieceEnd = min(end, cursor + 1_048_575)
+            var data = try await bytes(of: remote, start: cursor, end: pieceEnd)
+            if Self.uti(url: remote, mime: mime) == "public.mpeg-4" {
+                try await patchOriginalIfNeeded()
+                if fullFile != nil { data = try read(fullFile!, cursor, pieceEnd) }
+            }
+            if fullFile == nil, !hev1.isEmpty { MP4Hev1.apply(&data, rangeStart: Int(cursor), offsets: hev1) }
+            dataRequest.respond(with: data)
+            cursor = pieceEnd + 1
+        }
     }
 
-    private func slice(start: Int, count: Int) async throws -> Data {
-        var request = URLRequest(url: source)
-        let end = start + max(count, 1) - 1
+    /// A 2-byte probe. When the server ignores Range it returns the whole file, which is kept on disk.
+    private func ensureLength(of remote: URL) async throws {
+        if length != nil || fullFile != nil { return }
+        var probe = URLRequest(url: remote)
+        probe.setValue("bytes=0-1", forHTTPHeaderField: "Range")
+        let (file, response) = try await pull(probe)
+        if let total = Self.totalLength(response), response.statusCode == 206 {
+            length = total
+            try? FileManager.default.removeItem(at: file)
+            return
+        }
+        let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0
+        length = size
+        if size > 4096 { fullFile = file } else { try? FileManager.default.removeItem(at: file) }
+    }
+
+    private func bytes(of remote: URL, start: Int64, end: Int64) async throws -> Data {
+        if let fullFile { return try read(fullFile, start, end) }
+        var request = URLRequest(url: remote)
         request.setValue("bytes=\(start)-\(end)", forHTTPHeaderField: "Range")
-        let (data, response) = try await fetch(request)
-        if response.statusCode == 206 || response.value(forHTTPHeaderField: "Content-Range") != nil { return data }
-        let from = min(start, data.count)
-        let to = min(data.count, start + count)
-        return from < to ? data.subdata(in: from..<to) : data
+        let (file, response) = try await pull(request)
+        guard (200..<300).contains(response.statusCode) else {
+            try? FileManager.default.removeItem(at: file)
+            throw DSMError.transport("HTTP \(response.statusCode)")
+        }
+        let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? 0
+        let asked = end - start + 1
+        if response.statusCode != 206, size > asked + 4096 {
+            fullFile = file
+            if length == nil || length == 0 { length = size }
+            return try read(file, start, end)
+        }
+        defer { try? FileManager.default.removeItem(at: file) }
+        return try Data(contentsOf: file)
+    }
+
+    private func read(_ file: URL, _ start: Int64, _ end: Int64) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(max(0, start)))
+        return handle.readData(ofLength: Int(max(0, end - start + 1)))
+    }
+
+    /// iOS plays HEVC when the sample entry says hvc1. The four bytes are rewritten in the saved file.
+    private func patchOriginalIfNeeded() async throws {
+        guard !patched, let fullFile, Self.uti(url: source, mime: mime) == "public.mpeg-4" else { return }
+        patched = true
+        await Self.rewriteHev1(in: fullFile)
+    }
+
+    /// iOS plays HEVC when the sample entry says hvc1. The four bytes are the same length, so the file stays valid.
+    static func rewriteHev1(in file: URL) async {
+        let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
+        guard size > 32 else { return }
+        let offsets = (try? await MP4Hev1.locate(length: size) { start, count in
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            try handle.seek(toOffset: UInt64(start))
+            return handle.readData(ofLength: count)
+        }) ?? []
+        guard !offsets.isEmpty, let handle = try? FileHandle(forUpdating: file) else { return }
+        defer { try? handle.close() }
+        for offset in offsets {
+            try? handle.seek(toOffset: UInt64(offset))
+            try? handle.write(Data("hvc1".utf8))
+        }
     }
 
     private func originalURL(from custom: URL?) -> URL? {

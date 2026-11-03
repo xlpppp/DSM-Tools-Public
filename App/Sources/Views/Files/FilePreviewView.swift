@@ -327,24 +327,29 @@ private struct MediaFileView: View {
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: file.kind == .video ? .moviePlayback : .default)
         do {
             let url = try await remoteURL?() ?? client.downloadURL(for: file.path)
-            let asset = streamingAsset(client: client, url: url)
-            if file.kind == .video { videoIssue = await Self.videoIssue(in: asset) }
+            let asset = try await openedAsset(client: client, url: url)
             let item = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             player = item
             item.play()
+            if file.kind == .video { videoIssue = await Self.videoIssue(in: asset) }
         } catch {
             status = error.userMessage
         }
     }
 
-    /// Plays the remote URL directly. A pinned certificate or nginx basic auth cannot be handed to AVPlayer,
-    /// so those requests are streamed through the app transport instead of downloading the whole file first.
-    private func streamingAsset(client: DSMClient, url: URL) -> AVURLAsset {
+    /// A pinned certificate or nginx basic auth cannot be handed to AVPlayer.
+    /// Video also stays in the app so an HEVC `hev1` tag can be rewritten before the picture is dropped.
+    private func openedAsset(client: DSMClient, url: URL) async throws -> AVURLAsset {
         var options: [String: Any] = [:]
         if let mime = Self.mimeTypes[file.fileExtension] { options[AVURLAssetOverrideMIMETypeKey] = mime }
         guard session.streamsMediaInApp || file.kind == .video else { return AVURLAsset(url: url, options: options) }
         let mime = Self.mimeTypes[file.fileExtension] ?? "application/octet-stream"
-        let loader = PinnedMediaLoader(client: client, source: url, mime: mime)
+        let opened = try await PinnedMediaLoader.prepare(pull: { try await client.download($0) }, source: url, mime: mime)
+        if let file = opened.file {
+            localCopy = file
+            return AVURLAsset(url: file)
+        }
+        guard let loader = opened.loader else { return AVURLAsset(url: url, options: options) }
         mediaLoader = loader
         let asset = AVURLAsset(url: loader.assetURL)
         asset.resourceLoader.setDelegate(loader, queue: loader.queue)
