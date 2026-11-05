@@ -214,6 +214,7 @@ private struct MediaFileView: View {
     let file: RemoteFile
     var remoteURL: (() async throws -> URL)?
     @Environment(SessionManager.self) private var session
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
     @State private var player: AVPlayer?
     @State private var localCopy: URL?
