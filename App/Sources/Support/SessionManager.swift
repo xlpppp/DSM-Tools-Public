@@ -30,7 +30,7 @@ final class SessionManager {
     @ObservationIgnored private var lastPathSignature: String?
     @ObservationIgnored private weak var store: DeviceStore?
 
-    func connect(to profile: DeviceProfile, store: DeviceStore, otp: String? = nil) async {
+    func connect(to profile: DeviceProfile, store: DeviceStore, otp: String? = nil, trustDevice: Bool = true) async {
         // Same device, already on screen: a path flicker must not replace the home with "正在连接…".
         let quiet = otp == nil && state == .connected && client != nil && deviceID == profile.id
         self.store = store
@@ -54,7 +54,7 @@ final class SessionManager {
             ).resolve(profile.endpoints)
             let token = KeychainStore.get(KeychainStore.deviceTokenKey(profile.id))
             let result = try await resolution.client.login(account: profile.username, password: password,
-                                                           otpCode: otp, deviceToken: token)
+                                                           otpCode: otp, deviceToken: token, trustDevice: trustDevice)
             if let did = result.deviceToken {
                 KeychainStore.set(did, for: KeychainStore.deviceTokenKey(profile.id))
             }

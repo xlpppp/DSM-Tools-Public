@@ -72,7 +72,7 @@ public actor DSMClient {
     // MARK: Auth
 
     public func login(account: String, password: String, otpCode: String? = nil,
-                      deviceToken: String? = nil, deviceName: String = "NASHelper") async throws -> LoginResult {
+                      deviceToken: String? = nil, trustDevice: Bool = true, deviceName: String = "NASHelper") async throws -> LoginResult {
         if apis.isEmpty { try await loadAPIInfo() }
         // v6 exists on DSM 6.2 and 7.x and accepts a plain password over the (TLS) connection.
         guard let v = version(of: "SYNO.API.Auth", preferred: 6) else { throw DSMError.apiUnavailable("SYNO.API.Auth") }
@@ -85,8 +85,10 @@ public actor DSMClient {
         ]
         if let otpCode, !otpCode.isEmpty {
             params["otp_code"] = otpCode
-            params["enable_device_token"] = "yes"
-            params["device_name"] = deviceName
+            if trustDevice {
+                params["enable_device_token"] = "yes"
+                params["device_name"] = deviceName
+            }
         } else if let deviceToken, !deviceToken.isEmpty {
             params["device_id"] = deviceToken
             params["device_name"] = deviceName

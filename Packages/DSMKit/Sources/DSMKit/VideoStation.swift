@@ -698,6 +698,23 @@ extension DSMClient {
         return VideoStream(url: url, isHLS: true, streamID: id, api: api)
     }
 
+    /// HLS for a File Station path. Used when the phone cannot decode the file itself.
+    public func videoStream(path: String, quality: VideoQuality = .high) async throws -> VideoStream {
+        let api = "SYNO.VideoStation2.Streaming"
+        let fileJSON = String(data: try JSONSerialization.data(withJSONObject: ["path": path]), encoding: .utf8) ?? "{}"
+        let r: [String: JSONValue] = try await call(api, method: "open", version: 1, params: [
+            "file": fileJSON,
+            "force_open": "true",
+            "format": FSParam.string("hls"),
+            "profile": FSParam.string(quality.profile),
+        ])
+        guard let id = r["stream_id"]?.string?.nilIfEmpty else { throw DSMError.invalidResponse }
+        let url = try authenticatedURL(api: api, method: "stream", preferredVersion: 1, params: [
+            "stream_id": FSParam.string(id), "format": FSParam.string("hls"),
+        ], pathSuffix: "/vte/playlist.m3u8")
+        return VideoStream(url: url, isHLS: true, streamID: id, api: api)
+    }
+
     /// Ends a transcoding session so the NAS stops encoding. No-op for original quality.
     public func closeVideoStream(_ stream: VideoStream) async {
         guard let id = stream.streamID, let api = stream.api else { return }

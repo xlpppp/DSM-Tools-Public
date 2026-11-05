@@ -81,6 +81,7 @@ struct HomeView: View {
     @State private var switchingDevice = false
     @State private var editingDevice = false
     @State private var otpCode = ""
+    @State private var trustThisDevice = true
     @State private var alerts: [HealthAlert]?
     @State private var webEndpoint: Endpoint?
     @State private var hideVideoStation = false
@@ -160,18 +161,32 @@ struct HomeView: View {
         .toolbar(.hidden, for: .navigationBar)
         .sheet(isPresented: $switchingDevice) { DeviceListView() }
         .sheet(isPresented: $editingDevice) { DeviceEditorView(profile: device) }
-        .alert("输入二次验证码", isPresented: otpBinding) {
-            TextField("6 位验证码", text: $otpCode)
-                .keyboardType(.numberPad)
-                .textContentType(.oneTimeCode)
-            Button("取消", role: .cancel) { session.disconnect() }
-            Button("登录") {
-                let code = otpCode
-                otpCode = ""
-                Task { await session.connect(to: device, store: store, otp: code) }
+        .sheet(isPresented: otpBinding) {
+            NavigationStack {
+                Form {
+                    TextField("6 位验证码", text: $otpCode)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+                    Toggle("信任此设备，下次免验证", isOn: $trustThisDevice)
+                }
+                .navigationTitle("二次验证")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { session.disconnect() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("登录") {
+                            let code = otpCode
+                            let trust = trustThisDevice
+                            otpCode = ""
+                            Task { await session.connect(to: device, store: store, otp: code, trustDevice: trust) }
+                        }
+                        .disabled(otpCode.trimmingCharacters(in: .whitespaces).count < 6)
+                    }
+                }
             }
-        } message: {
-            Text("该账号开启了两步验证。验证通过后，本机下次登录无需再输入。")
+            .presentationDetents([.medium])
         }
         .alert("证书不受信任", isPresented: trustBinding, presenting: pendingTrust) { pending in
             Button("取消", role: .cancel) { session.disconnect() }

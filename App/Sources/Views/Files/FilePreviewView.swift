@@ -221,7 +221,12 @@ private struct MediaFileView: View {
     /// Set when the file has a picture the system player cannot show (it then plays only the sound).
     @State private var videoIssue: String?
     @State private var externalError: String?
-    @State private var mediaLoader: PinnedMediaLoader?
+    @State private var bridge: MediaBridge?
+    @State private var transcode: VideoStream?
+    @State private var subs: [VideoSubtitle] = []
+    @State private var subtitleID: String?
+    @State private var captionTrack: SubtitleTrack?
+    @State private var caption: String?
 
     /// Containers and codecs AVPlayer plays natively. Others (mkv, avi, rmvb, ape…) need the media phase's player.
     /// MPEG-TS is left out: AVPlayer only plays it inside HLS, a bare .ts file gives sound at best.
@@ -244,10 +249,16 @@ private struct MediaFileView: View {
                     externalPlayers
                 }
             } else if let player {
-                VideoPlayer(player: player) {
-                    if file.kind == .audio { audioArtwork }
+                PlaybackChrome(player: player, title: file.name, subtitles: subs, subtitleID: subtitleID) { id in
+                    selectSubtitle(id)
+                } onClose: { dismiss() }
+                .overlay(alignment: .bottom) {
+                    if let caption {
+                        Text(caption).font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                            .padding(8).background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+                            .padding(.bottom, 120)
+                    }
                 }
-                .ignoresSafeArea(edges: .bottom)
                 .overlay(alignment: .top) {
                     if let videoIssue { issueBanner(videoIssue) }
                 }
@@ -260,8 +271,16 @@ private struct MediaFileView: View {
             }
         }
         .task { await prepare() }
+        .onReceive(Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()) { _ in
+            guard let time = player?.currentTime().seconds, time.isFinite else { return }
+            caption = captionTrack?.cue(at: time)?.text
+        }
         .onDisappear {
             player?.pause()
+            bridge?.stop()
+            if let transcode, let client = session.client {
+                Task { await client.closeVideoStream(transcode) }
+            }
             if let localCopy { try? FileManager.default.removeItem(at: localCopy.deletingLastPathComponent()) }
         }
     }
@@ -326,34 +345,45 @@ private struct MediaFileView: View {
         guard Self.playable.contains(file.fileExtension), let client = session.client else { return }
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: file.kind == .video ? .moviePlayback : .default)
         do {
-            let url = try await remoteURL?() ?? client.downloadURL(for: file.path)
-            let asset = try await openedAsset(client: client, url: url)
-            let item = AVPlayer(playerItem: AVPlayerItem(asset: asset))
-            player = item
-            item.play()
-            if file.kind == .video { videoIssue = await Self.videoIssue(in: asset) }
+            var url = try await remoteURL?() ?? client.downloadURL(for: file.path)
+            if file.kind == .video, !Self.playable.contains(file.fileExtension), client.canTranscodeVideo,
+               let stream = try? await client.videoStream(path: file.path) {
+                transcode = stream
+                url = stream.url
+            }
+            let opened = try await MediaBridge.start(upstream: url) { try await client.download($0) }
+            bridge = opened
+            let item = AVPlayerItem(url: opened.localURL)
+            let av = AVPlayer(playerItem: item)
+            player = av
+            av.play()
+            if file.kind == .video {
+                subs = (try? await client.sidecarSubtitles(near: file.path)) ?? []
+                if let asset = item.asset as? AVURLAsset { videoIssue = await Self.videoIssue(in: asset) }
+                if videoIssue != nil, client.canTranscodeVideo, let stream = try? await client.videoStream(path: file.path) {
+                    transcode = stream
+                    bridge?.stop()
+                    let next = try await MediaBridge.start(upstream: stream.url) { try await client.download($0) }
+                    bridge = next
+                    let again = AVPlayer(playerItem: AVPlayerItem(url: next.localURL))
+                    player = again
+                    again.play()
+                    videoIssue = nil
+                }
+            }
         } catch {
             status = error.userMessage
         }
     }
 
-    /// A pinned certificate or nginx basic auth cannot be handed to AVPlayer.
-    /// Video also stays in the app so an HEVC `hev1` tag can be rewritten before the picture is dropped.
-    private func openedAsset(client: DSMClient, url: URL) async throws -> AVURLAsset {
-        var options: [String: Any] = [:]
-        if let mime = Self.mimeTypes[file.fileExtension] { options[AVURLAssetOverrideMIMETypeKey] = mime }
-        guard session.streamsMediaInApp || file.kind == .video else { return AVURLAsset(url: url, options: options) }
-        let mime = Self.mimeTypes[file.fileExtension] ?? "application/octet-stream"
-        let opened = try await PinnedMediaLoader.prepare(pull: { try await client.download($0) }, source: url, mime: mime)
-        if let file = opened.file {
-            localCopy = file
-            return AVURLAsset(url: file)
+    private func selectSubtitle(_ id: String?) {
+        subtitleID = id
+        captionTrack = nil
+        caption = nil
+        guard let id, let sub = subs.first(where: { $0.id == id }), let client = session.client else { return }
+        Task {
+            captionTrack = try? await client.subtitleTrack(fileID: 0, subtitle: sub)
         }
-        guard let loader = opened.loader else { return AVURLAsset(url: url, options: options) }
-        mediaLoader = loader
-        let asset = AVURLAsset(url: loader.assetURL)
-        asset.resourceLoader.setDelegate(loader, queue: loader.queue)
-        return asset
     }
 
     /// Why the picture would not show, if it would not. AVPlayer plays the audio track of a file whose

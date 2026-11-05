@@ -272,12 +272,16 @@ public final class JellyfinClient: @unchecked Sendable {
         ]), headers: headers, json: Self.playbackBody(userID: userID ?? ""))
         let info = try JSONDecoder().decode(PlaybackInfo.self, from: data)
         guard let source = info.MediaSources.first else { throw ServiceError.invalidResponse }
+        let container = source.Container?.lowercased() ?? ""
+        let directPlay = ["mp4", "m4v", "mov"].contains(container)
+        if directPlay, let direct = source.DirectStreamUrl, !direct.isEmpty, let url = resolve(direct) {
+            return withAPIKey(url)
+        }
+        if let transcode = source.TranscodingUrl, !transcode.isEmpty, let url = resolve(transcode) {
+            return withAPIKey(url)
+        }
         if let direct = source.DirectStreamUrl, !direct.isEmpty, let url = resolve(direct) { return withAPIKey(url) }
-        let rawExt = source.Container?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let ext = rawExt.isEmpty ? "mp4" : rawExt
-        var query = ["Static": "true", "MediaSourceId": source.Id ?? item.id, "api_key": token ?? ""]
-        if let playSessionID = info.PlaySessionId, !playSessionID.isEmpty { query["PlaySessionId"] = playSessionID }
-        return http.url("Videos/\(item.id)/stream.\(ext)", query: query)
+        return videoURL(for: item, mediaSourceID: source.Id ?? item.id, playSessionID: info.PlaySessionId)
     }
 
     public func imageURL(for item: MediaEntry, maxHeight: Int = 600) -> URL {
@@ -318,15 +322,24 @@ public final class JellyfinClient: @unchecked Sendable {
             "UserId": userID,
             "MaxStreamingBitrate": 120_000_000,
             "StartTimeTicks": 0,
-            "EnableTranscoding": false,
+            "AutoOpenLiveStream": true,
             "DeviceProfile": [
                 "MaxStreamingBitrate": 120_000_000,
                 "MaxStaticBitrate": 120_000_000,
                 "DirectPlayProfiles": [[
-                    "Container": "mp4,m4v,mov,mkv,ts,m2ts,avi",
+                    "Container": "mp4,m4v,mov",
                     "Type": "Video",
-                    "VideoCodec": "h264,hevc,mpeg4,vp9",
-                    "AudioCodec": "aac,mp3,ac3,eac3,flac,opus,dts",
+                    "VideoCodec": "h264",
+                    "AudioCodec": "aac,mp3,ac3",
+                ]],
+                "TranscodingProfiles": [[
+                    "Container": "ts",
+                    "Type": "Video",
+                    "VideoCodec": "h264",
+                    "AudioCodec": "aac",
+                    "Protocol": "hls",
+                    "Context": "Streaming",
+                    "MaxAudioChannels": "2",
                 ]],
                 "SubtitleProfiles": [
                     ["Format": "vtt", "Method": "External"],

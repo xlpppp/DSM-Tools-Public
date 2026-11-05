@@ -40,6 +40,7 @@ struct BookReaderView: View {
         Group {
             if let html {
                 BookWebView(html: html, page: page)
+                    .padding(.horizontal, margin)
                     .overlay {
                         HStack(spacing: 0) {
                             Color.clear.contentShape(Rectangle())
@@ -201,24 +202,26 @@ enum BookDocument {
           var page = document.getElementById('page');
           if (!box || !page) return;
           var cols = window.nasColumns > 1 ? 2 : 1;
-          var gap = window.nasGap > 8 ? window.nasGap : 32;
           var w = box.clientWidth || window.innerWidth || 1;
-          var col = Math.max(40, Math.floor(w / cols - gap));
+          var col = Math.max(40, Math.floor(w / cols));
           page.style.columnWidth = col + 'px';
-          page.style.columnGap = gap + 'px';
+          page.style.columnGap = '0px';
+          page.style.padding = '16px 0';
           page.style.height = (box.clientHeight || window.innerHeight) + 'px';
           page.style.columnFill = 'auto';
+          page.style.boxSizing = 'border-box';
+          window.nasStep = col * cols;
         }
         function nasTurn(delta) {
           nasLayout();
           var box = document.getElementById('scroller');
-          var w = box.clientWidth || 1;
-          var max = Math.max(0, box.scrollWidth - w);
-          var index0 = Math.round(box.scrollLeft / w);
-          var x = Math.max(0, Math.min(max, (index0 + delta) * w));
-          box.scrollTo({left: x, behavior: 'auto'});
-          var pages = Math.max(1, Math.ceil(box.scrollWidth / w));
-          var index = Math.min(pages, Math.round(x / w) + 1);
+          var step = window.nasStep || box.clientWidth || 1;
+          var max = Math.max(0, box.scrollWidth - step);
+          var index0 = Math.round(box.scrollLeft / step);
+          var x = Math.max(0, Math.min(max, (index0 + delta) * step));
+          box.scrollLeft = x;
+          var pages = Math.max(1, Math.ceil(box.scrollWidth / step));
+          var index = Math.min(pages, Math.round(x / step) + 1);
           return index + '/' + pages;
         }
         </script>

@@ -49,7 +49,17 @@ public final class URLSessionTransport: NSObject, HTTPTransport, @unchecked Send
         config.timeoutIntervalForRequest = timeout
         config.httpCookieAcceptPolicy = .never
         session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        let uploadConfig = URLSessionConfiguration.default
+        uploadConfig.timeoutIntervalForRequest = 3600
+        uploadConfig.timeoutIntervalForResource = 24 * 3600
+        uploadConfig.httpMaximumConnectionsPerHost = 1
+        uploadConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+        uploadConfig.urlCache = nil
+        uploadConfig.httpCookieAcceptPolicy = .never
+        uploadSession = URLSession(configuration: uploadConfig, delegate: self, delegateQueue: nil)
     }
+
+    private var uploadSession: URLSession!
 
     public func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
         let request = authorized(request)
@@ -57,10 +67,23 @@ public final class URLSessionTransport: NSObject, HTTPTransport, @unchecked Send
     }
 
     public func upload(_ request: URLRequest, fromFile file: URL) async throws -> (Data, HTTPURLResponse) {
-        // Uploads can be large and slow; give them far more time than API calls.
+        // Foreground ephemeral uploads are killed around 500 MB. A default session streams the file.
         var r = authorized(request)
-        r.timeoutInterval = 3600
-        return try await run(r) { try await self.session.upload(for: r, fromFile: file) }
+        r.timeoutInterval = 24 * 3600
+        return try await withCheckedThrowingContinuation { continuation in
+            let task = uploadSession.uploadTask(with: r, fromFile: file) { data, response, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                guard let http = response as? HTTPURLResponse else {
+                    continuation.resume(throwing: DSMError.invalidResponse)
+                    return
+                }
+                continuation.resume(returning: (data ?? Data(), http))
+            }
+            task.resume()
+        }
     }
 
     public func download(_ request: URLRequest) async throws -> (URL, HTTPURLResponse) {

@@ -23,7 +23,7 @@ struct VideoStationPlayerView: View {
     @State private var resumeAt: Double?
     @State private var observer: Any?
     @State private var lastSaved: Double = 0
-    @State private var mediaLoader: PinnedMediaLoader?
+    @State private var mediaBridge: MediaBridge?
     @Environment(\.openURL) private var openURL
     @State private var externalError: String?
 
@@ -36,8 +36,9 @@ struct VideoStationPlayerView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if let player {
-                VideoPlayer(player: player) { captionOverlay }
-                    .ignoresSafeArea()
+                PlaybackChrome(player: player, title: title, subtitles: subtitles, subtitleID: subtitleID,
+                               onSubtitle: { selectSubtitle($0) }, onClose: { dismiss() })
+                    .overlay { captionOverlay }
             } else if let resumeAt {
                 resumeCard(resumeAt)
             } else {
@@ -181,6 +182,9 @@ struct VideoStationPlayerView: View {
             await client.closeVideoStream(old)
         }
         do {
+            if fallback, quality == .original, !Self.nativeContainers.contains(file.fileExtension), client.canTranscodeVideo {
+                quality = .high
+            }
             let s = try await client.videoStream(for: file, quality: quality)
             stream = s
             var options: [String: Any] = [:]
@@ -225,26 +229,11 @@ struct VideoStationPlayerView: View {
 
     /// Original files on a pinned certificate cannot be opened by AVPlayer's own loader.
     private func playableAsset(client: DSMClient, stream: VideoStream, options: [String: Any]) async -> AVURLAsset {
-        guard !stream.isHLS, session.endpoint?.pinnedCertificateSHA256 != nil else {
-            return AVURLAsset(url: stream.url, options: options)
-        }
-        var probe = URLRequest(url: stream.url)
-        probe.setValue("bytes=0-1", forHTTPHeaderField: "Range")
-        if let (file, response) = try? await client.download(probe) {
-            let bytes = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue ?? 0
-            if response.statusCode != 206 && bytes > 64 {
-                let named = file.deletingLastPathComponent().appendingPathComponent("original.\(self.file.fileExtension)")
-                let local = (try? FileManager.default.moveItem(at: file, to: named)) != nil ? named : file
-                await PinnedMediaLoader.rewriteHev1(in: local)
-                return AVURLAsset(url: local)
-            }
-            try? FileManager.default.removeItem(at: file)
-            let mime = Self.mimeTypes[fileExtension(stream.url)] ?? "video/mp4"
-            let loader = PinnedMediaLoader(client: client, source: stream.url, mime: mime)
-            mediaLoader = loader
-            let asset = AVURLAsset(url: loader.assetURL)
-            asset.resourceLoader.setDelegate(loader, queue: loader.queue)
-            return asset
+        guard session.streamsMediaInApp else { return AVURLAsset(url: stream.url, options: options) }
+        if let bridge = try? await MediaBridge.start(upstream: stream.url, pull: { try await client.download($0) }) {
+            mediaBridge?.stop()
+            mediaBridge = bridge
+            return AVURLAsset(url: bridge.localURL)
         }
         return AVURLAsset(url: stream.url, options: options)
     }
@@ -329,6 +318,7 @@ struct VideoStationPlayerView: View {
         if let observer { player?.removeTimeObserver(observer) }
         observer = nil
         player?.pause()
+        mediaBridge?.stop()
         let client = session.client
         let s = stream
         let id = file.id

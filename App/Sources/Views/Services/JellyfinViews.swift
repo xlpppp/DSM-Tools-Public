@@ -384,13 +384,13 @@ struct StreamPlayerView: View {
     var pull: (@Sendable (URLRequest) async throws -> (URL, HTTPURLResponse))? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var player: AVPlayer?
-    @State private var mediaLoader: PinnedMediaLoader?
+    @State private var bridge: MediaBridge?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.black.ignoresSafeArea()
             if let player {
-                VideoPlayer(player: player).ignoresSafeArea()
+                PlaybackChrome(player: player, title: url.lastPathComponent, onClose: { dismiss() })
             }
             Button { dismiss() } label: {
                 Image(systemName: "xmark")
@@ -403,33 +403,23 @@ struct StreamPlayerView: View {
         }
         .task {
             try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
-            let asset: AVURLAsset
-            if let pull {
-                let ext = url.pathExtension.lowercased()
-                let mime = ext == "m3u8" ? "application/vnd.apple.mpegurl" : (ext == "mkv" ? "video/x-matroska" : "video/mp4")
-                if let opened = try? await PinnedMediaLoader.prepare(pull: pull, source: url, mime: mime) {
-                    if let file = opened.file {
-                        asset = AVURLAsset(url: file)
-                    } else if let loader = opened.loader {
-                        mediaLoader = loader
-                        asset = AVURLAsset(url: loader.assetURL)
-                        asset.resourceLoader.setDelegate(loader, queue: loader.queue)
-                    } else {
-                        asset = AVURLAsset(url: url)
-                    }
-                } else {
-                    asset = AVURLAsset(url: url)
-                }
+            let item: AVPlayerItem
+            if let pull, let opened = try? await MediaBridge.start(upstream: url, pull: pull) {
+                bridge = opened
+                item = AVPlayerItem(url: opened.localURL)
+            } else if headers.isEmpty {
+                item = AVPlayerItem(url: url)
             } else {
-                asset = headers.isEmpty
-                    ? AVURLAsset(url: url)
-                    // Needed for servers that authenticate media requests by header (Immich).
-                    : AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+                let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+                item = AVPlayerItem(asset: asset)
             }
-            let p = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+            let p = AVPlayer(playerItem: item)
             player = p
             p.play()
         }
-        .onDisappear { player?.pause() }
+        .onDisappear {
+            player?.pause()
+            bridge?.stop()
+        }
     }
 }

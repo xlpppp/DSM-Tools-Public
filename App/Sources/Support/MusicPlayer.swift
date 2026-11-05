@@ -89,7 +89,8 @@ final class MusicPlayer {
         loadTask?.cancel()
         player.pause()
         player.replaceCurrentItem(with: nil)
-        mediaLoader = nil
+        mediaBridge?.stop()
+        mediaBridge = nil
         isPlaying = false
         queue = []
         cleanupLocal()
@@ -123,27 +124,16 @@ final class MusicPlayer {
                 guard !Task.isCancelled else { return }
                 let item: AVPlayerItem
                 if let mediaPull, !url.isFileURL {
-                    let opened = try await PinnedMediaLoader.prepare(pull: mediaPull, source: url, mime: Self.mime(url))
-                    if let file = opened.file {
-                        localFile = file
-                        item = AVPlayerItem(url: file)
-                        player.replaceCurrentItem(with: item)
-                        mediaLoader = nil
-                    } else if let loader = opened.loader {
-                        let asset = AVURLAsset(url: loader.assetURL)
-                        asset.resourceLoader.setDelegate(loader, queue: loader.queue)
-                        item = AVPlayerItem(asset: asset)
-                        player.replaceCurrentItem(with: item)
-                        mediaLoader = loader
-                    } else {
-                        item = AVPlayerItem(url: url)
-                        player.replaceCurrentItem(with: item)
-                        mediaLoader = nil
-                    }
+                    let opened = try await MediaBridge.start(upstream: url, pull: mediaPull)
+                    mediaBridge?.stop()
+                    mediaBridge = opened
+                    item = AVPlayerItem(url: opened.localURL)
+                    player.replaceCurrentItem(with: item)
                 } else {
+                    mediaBridge?.stop()
+                    mediaBridge = nil
                     item = AVPlayerItem(url: url)
                     player.replaceCurrentItem(with: item)
-                    mediaLoader = nil
                 }
                 observeEnd(of: item)
                 player.play()
@@ -167,7 +157,7 @@ final class MusicPlayer {
     /// Set by the app for servers whose certificate is pinned; those URLs are fetched first.
     @ObservationIgnored var downloader: (@Sendable (URL, String) async throws -> URL)?
     @ObservationIgnored var pinnedHosts: Set<String> = []
-    @ObservationIgnored private var mediaLoader: PinnedMediaLoader?
+    @ObservationIgnored private var mediaBridge: MediaBridge?
 
     private func requiresDownload(_ url: URL) -> Bool {
         // Host strings differ between the saved endpoint and the stream URL (IP, QuickConnect, port).

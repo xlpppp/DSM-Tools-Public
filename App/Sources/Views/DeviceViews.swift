@@ -81,6 +81,7 @@ struct DeviceEditorView: View {
     @State private var password = ""
     @State private var basicUser = ""
     @State private var basicPassword = ""
+    @State private var qcID = ""
     @State private var endpoints: [Endpoint] = []
     @State private var ssh = SSHSettings()
     @State private var sshLanPortText = "22"
@@ -146,6 +147,8 @@ struct DeviceEditorView: View {
             FieldDivider()
             SecureFieldRow(symbol: "lock", placeholder: profile == nil ? "密码" : "密码（留空则不修改）",
                            text: $password)
+            FieldDivider()
+            FieldRow(symbol: "bolt.horizontal", placeholder: "QuickConnect ID（可留空）", text: $qcID)
             FieldDivider()
             FieldRow(symbol: "person.badge.key", placeholder: "auth_basic 用户名（可留空）", text: $basicUser)
             FieldDivider()
@@ -298,6 +301,7 @@ struct DeviceEditorView: View {
             name = profile.name
             username = profile.username
             basicUser = profile.basicAuthUsername
+            qcID = profile.endpoints.first(where: \.isQuickConnectID)?.host ?? ""
             endpoints = profile.endpoints
             ssh = profile.ssh
             if ssh.lanHost.isEmpty && ssh.wanHost.isEmpty && !ssh.host.isEmpty {
@@ -321,6 +325,15 @@ struct DeviceEditorView: View {
         ssh.wanPort = sshPort(sshWanPortText)
         ssh.host = ""
         ssh.port = 22
+        let qc = qcID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !qc.isEmpty {
+            if let index = endpoints.firstIndex(where: \.isQuickConnectID) {
+                endpoints[index].host = qc
+                endpoints[index].kind = .quickConnect
+            } else {
+                endpoints.insert(Endpoint(kind: .quickConnect, host: qc, useHTTPS: true), at: 0)
+            }
+        }
         let cleaned = endpoints
             .map { Endpoint(id: $0.id, kind: $0.kind, host: $0.host, port: $0.port, useHTTPS: $0.useHTTPS,
                             pinnedCertificateSHA256: $0.pinnedCertificateSHA256) }
